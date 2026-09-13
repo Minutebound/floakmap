@@ -1,0 +1,26 @@
+# ── FloakMap — frontend only ─────────────────────────────────────────────────
+#   cd frontend && docker compose up --build     →  http://localhost:3000
+#
+# Expects the backend to already be running (cd ../backend && docker compose up).
+# The map still renders without it: lib/api.ts falls back to bundled seed data,
+# and the live panel simply shows "Offline".
+#
+# NEXT_PUBLIC_API_URL is baked in at build time and used for both the REST
+# calls and the websocket, so point it at wherever the browser can reach the
+# API — not at a Docker-internal hostname.
+
+services:
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: floakmap-web
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    extra_hosts:
+      # Lets the container reach a backend running on the host machine.
+      - "host.docker.internal:host-gateway"

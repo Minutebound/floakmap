@@ -1,0 +1,53 @@
+# Environment Variables & Secrets (Critical)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+certs/
+service-account*.json
+client_secret*.json
+secrets/
+
+# Python Cache & Byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local Databases & State
+*.sqlite3
+*.db
+alembic/versions/*.pyc
+
+# Testing, Typing & Coverage
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+
+# Logs
+*.log
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.docker/
+docker-compose.override.yml

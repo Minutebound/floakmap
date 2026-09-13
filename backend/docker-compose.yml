@@ -1,0 +1,85 @@
+# ── FloakMap — backend only ──────────────────────────────────────────────────
+#   cd backend && docker compose up --build      →  http://localhost:8000/docs
+#
+# Brings up the API and Redis. Redis carries the live position fan-out between
+# API pods; with one pod the app falls back to an in-process bus, but running
+# it here means dev matches production.
+#
+# Add fake vehicles:  docker compose --profile demo up --build
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: floakmap-redis
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: floakmap-api
+    ports:
+      - "8000:8000"
+    environment:
+      FLOAK_REDIS_URL: redis://redis:6379/0
+      FLOAK_JWT_SECRET: ${FLOAK_JWT_SECRET:-dev-secret-change-me}
+      FLOAK_STALE_AFTER_SECONDS: ${FLOAK_STALE_AFTER_SECONDS:-180}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 20s
+      timeout: 8s
+      retries: 3
+      start_period: 10s
+
+  # Nine fake vehicles and people, so the map has something moving on it.
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: floakmap-simulator
+    profiles: ["demo"]
+    command: ["python", "/app/tools/simulate_fleet.py", "--api", "http://backend:8000"]
+    volumes:
+      - ../tools:/app/tools:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # PostGIS + TimescaleDB, for when you swap services/registry.py for real
+  # persistence. Not needed to run the app.
+  #   docker compose --profile db up
+  db:
+    image: timescale/timescaledb-ha:pg16
+    container_name: floakmap-db
+    profiles: ["db"]
+    environment:
+      POSTGRES_PASSWORD: floak
+      POSTGRES_DB: floakmap
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

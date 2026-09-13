@@ -1,0 +1,17 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.1
+pydantic>=2.7.0
+pydantic-settings>=2.4.0
+python-dotenv>=1.0.1
+httpx>=0.27.0
+
+# live tracking
+PyJWT>=2.9.0
+redis>=5.0.8
+websockets>=12.0
+
+# Enable when you move off the in-memory registry to backend/db/schema.sql:
+# sqlalchemy>=2.0.35
+# asyncpg>=0.29.0
+# geoalchemy2>=0.15.2
+# alembic>=1.13.3
