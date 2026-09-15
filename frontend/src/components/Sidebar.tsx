@@ -138,7 +138,7 @@ export function LayerIcon({
         fill="none" stroke="currentColor" strokeWidth="2"
         strokeLinecap="round" strokeLinejoin="round"
       >
-        <path d={meta.iconPath} />
+        {meta.iconPaths.map((d) => <path key={d} d={d} />)}
       </svg>
     </span>
   )
@@ -262,7 +262,7 @@ export default function Sidebar({
             value={search}
             onChange={(e) => { setSearch(e.target.value); setNotFound(false) }}
             onKeyDown={handleSearch}
-            placeholder="Destination address or ZIP"
+            placeholder="Search city or ZIP"
             autoComplete="off"
             className={clsx('min-w-0 flex-1 bg-transparent text-[12.5px] outline-none',
                             t.text, dark ? 'placeholder:text-ink-500' : 'placeholder:text-ink-300')}
@@ -371,6 +371,7 @@ interface SettingsProps {
   onThemeChange: (theme: Theme) => void
   onLayerToggle: (key: CategoryKey) => void
   onRequestLocation: () => void
+  onProfileNameChange: (name: string) => void
   onClose: () => void
 }
 
@@ -379,17 +380,19 @@ interface SettingsProps {
  * few surfaces where covering the map is the right call: nobody adjusts units
  * while watching a vehicle.
  */
-export function SettingsPage({
-  theme, profileName, prefs, geoStatus, geoMessage, layers,
-  onPrefsChange, onThemeChange, onLayerToggle, onRequestLocation, onClose,
-}: SettingsProps) {
+/**
+ * Settings rows, hoisted to module scope on purpose.
+ *
+ * Defined inside SettingsPage these are a new component type on every render,
+ * so React unmounts and remounts the entire subtree each keystroke — the name
+ * field lost focus and its value after a single character. Same markup, but
+ * stable identity.
+ */
+function SettingsRow({ theme, label, hint, children }: {
+  theme: Theme; label: string; hint?: string; children: React.ReactNode
+}) {
   const t = ui(theme)
-  const dark = theme === 'dark'
-  const geo = GEO_COPY[geoStatus]
-
-  const Row = ({ label, hint, children }: {
-    label: string; hint?: string; children: React.ReactNode
-  }) => (
+  return (
     <div className={clsx('flex items-center gap-3 border-b px-5 py-3.5 last:border-b-0', t.border)}>
       <span className="min-w-0 flex-1">
         <span className="block text-[13px] font-medium">{label}</span>
@@ -398,23 +401,50 @@ export function SettingsPage({
       {children}
     </div>
   )
+}
 
-  const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
+function SettingsSection({ theme, title, children }: {
+  theme: Theme; title: string; children: React.ReactNode
+}) {
+  const t = ui(theme)
+  return (
     <section className="mb-5">
       <h3 className={clsx('mb-1.5 px-5 text-[11px] font-medium', t.faint)}>{title}</h3>
-      <div className={clsx('rounded-xl border', t.border, dark ? 'bg-ink-900' : 'bg-white')}>
+      <div className={clsx('rounded-xl border', t.border,
+                           theme === 'dark' ? 'bg-ink-900' : 'bg-white')}>
         {children}
       </div>
     </section>
   )
+}
 
-  const Toggle = ({ on, onChange, label }: {
-    on: boolean; onChange: () => void; label: string
-  }) => (
+function SettingsToggle({ on, onChange, label }: {
+  on: boolean; onChange: () => void; label: string
+}) {
+  return (
     <button onClick={onChange} role="switch" aria-checked={on} aria-label={label}>
       <Switch on={on} />
     </button>
   )
+}
+
+export function SettingsPage({
+  theme, profileName, prefs, geoStatus, geoMessage, layers,
+  onPrefsChange, onThemeChange, onLayerToggle, onRequestLocation,
+  onProfileNameChange, onClose,
+}: SettingsProps) {
+  const t = ui(theme)
+  const dark = theme === 'dark'
+  const geo = GEO_COPY[geoStatus]
+
+  // Held locally and committed on blur, so the avatar initials do not churn
+  // on every keystroke while someone is mid-word.
+  const [draftName, setDraftName] = useState(profileName)
+  const commitName = () => {
+    const next = draftName.trim()
+    if (next && next !== profileName) onProfileNameChange(next)
+    else setDraftName(profileName)
+  }
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
@@ -440,7 +470,7 @@ export function SettingsPage({
             {initialsOf(profileName)}
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[15px] font-semibold">{profileName}</span>
+            <span className="block truncate text-[15px] font-semibold">{draftName || profileName}</span>
             <span className={clsx('block text-[11.5px]', t.faint)}>Settings</span>
           </span>
           <button
@@ -456,8 +486,50 @@ export function SettingsPage({
         </header>
 
         <div className={clsx('min-h-0 flex-1 overflow-y-auto py-5', t.base)}>
-          <Section title="Location">
-            <Row
+          <SettingsSection theme={theme} title="Profile">
+            <div className={clsx('border-b px-5 py-4', t.border)}>
+              {/* Associated, not just adjacent: without htmlFor/id a screen
+                  reader announces this input as unlabelled, and tapping the
+                  label does not focus it. */}
+              <label htmlFor="profile-name"
+                     className={clsx('mb-1.5 block text-[11px] font-medium', t.faint)}>
+                Display name
+              </label>
+              <input
+                id="profile-name"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                onBlur={commitName}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                  if (e.key === 'Escape') setDraftName(profileName)
+                }}
+                placeholder="Your name"
+                className={clsx(
+                  'w-full rounded-lg border px-3 py-2 text-[13px] outline-none transition-colors',
+                  t.text, dark
+                    ? 'border-ink-700 bg-ink-850 placeholder:text-ink-500 focus:border-signal'
+                    : 'border-ink-100 bg-white placeholder:text-ink-300 focus:border-signal',
+                )}
+              />
+              <p className={clsx('mt-1.5 text-[11px] leading-snug', t.faint)}>
+                This is what a net host sees next to your join request, and what
+                other members see on the map.
+              </p>
+            </div>
+            <SettingsRow theme={theme} label="Avatar" hint="Generated from your initials.">
+              <span className={clsx(
+                'flex h-9 w-9 items-center justify-center rounded-full text-[12px] font-semibold ring-1',
+                dark ? 'bg-ink-800 text-ink-100 ring-ink-700' : 'bg-ink-100 text-ink-700 ring-ink-200',
+              )}>
+                {initialsOf(draftName || profileName)}
+              </span>
+            </SettingsRow>
+          </SettingsSection>
+
+          <SettingsSection theme={theme} title="Location">
+            <SettingsRow
+              theme={theme}
               label="Device location"
               hint={geoMessage ?? 'Used to centre the map and sort nearby places.'}
             >
@@ -472,21 +544,21 @@ export function SettingsPage({
                 <span className="h-1.5 w-1.5 rounded-full bg-current" />
                 {geo.label}
               </span>
-            </Row>
+            </SettingsRow>
             {geoStatus !== 'granted' && (
-              <Row label="Permission" hint="Blocked permissions have to be cleared in the browser's site settings.">
+              <SettingsRow theme={theme} label="Permission" hint="Blocked permissions have to be cleared in the browser's site settings.">
                 <button
                   onClick={onRequestLocation}
                   className="rounded-lg bg-signal px-3 py-1.5 text-[12px] font-semibold text-ink-900"
                 >
                   Try again
                 </button>
-              </Row>
+              </SettingsRow>
             )}
-          </Section>
+          </SettingsSection>
 
-          <Section title="Appearance">
-            <Row label="Theme" hint="Dark mode also recolours the map itself, not just the panels.">
+          <SettingsSection theme={theme} title="Appearance">
+            <SettingsRow theme={theme} label="Theme" hint="Dark mode also recolours the map itself, not just the panels.">
               <div className={clsx('flex gap-0.5 rounded-lg p-0.5', dark ? 'bg-ink-800' : 'bg-ink-100')}>
                 {(['light', 'dark'] as const).map((mode) => (
                   <button
@@ -500,8 +572,8 @@ export function SettingsPage({
                   </button>
                 ))}
               </div>
-            </Row>
-            <Row label="Distance units">
+            </SettingsRow>
+            <SettingsRow theme={theme} label="Distance units">
               <div className={clsx('flex gap-0.5 rounded-lg p-0.5', dark ? 'bg-ink-800' : 'bg-ink-100')}>
                 {(['mi', 'km'] as const).map((u) => (
                   <button
@@ -515,34 +587,23 @@ export function SettingsPage({
                   </button>
                 ))}
               </div>
-            </Row>
-          </Section>
+            </SettingsRow>
+          </SettingsSection>
 
-          <Section title="Map detail">
-            <Row label="Terrain shading" hint="Hillshade under the basemap, below zoom 13.">
-              <Toggle on={prefs.terrain} label="Terrain shading"
+          <SettingsSection theme={theme} title="Map detail">
+            <SettingsRow theme={theme} label="Terrain shading" hint="Hillshade under the basemap, below zoom 13.">
+              <SettingsToggle on={prefs.terrain} label="Terrain shading"
                       onChange={() => onPrefsChange({ ...prefs, terrain: !prefs.terrain })} />
-            </Row>
-            <Row label="Place labels" hint="Turn off for a clean plate when screenshotting.">
-              <Toggle on={prefs.labels} label="Place labels"
+            </SettingsRow>
+            <SettingsRow theme={theme} label="Place labels" hint="Turn off for a clean plate when screenshotting.">
+              <SettingsToggle on={prefs.labels} label="Place labels"
                       onChange={() => onPrefsChange({ ...prefs, labels: !prefs.labels })} />
-            </Row>
-            <Row label="OpenStreetMap POIs" hint="Off by default: they compete with your own pins.">
-              <Toggle on={prefs.poi} label="OpenStreetMap POIs"
+            </SettingsRow>
+            <SettingsRow theme={theme} label="OpenStreetMap POIs" hint="Off by default: they compete with your own pins.">
+              <SettingsToggle on={prefs.poi} label="OpenStreetMap POIs"
                       onChange={() => onPrefsChange({ ...prefs, poi: !prefs.poi })} />
-            </Row>
-          </Section>
-
-          <Section title="Layers">
-            {LAYER_META.map(({ key, label, blurb }) => (
-              <Row key={key} label={label} hint={blurb}>
-                <div className="flex items-center gap-2.5">
-                  <LayerIcon category={key} theme={theme} size={26} active={layers[key]} />
-                  <Toggle on={layers[key]} label={label} onChange={() => onLayerToggle(key)} />
-                </div>
-              </Row>
-            ))}
-          </Section>
+            </SettingsRow>
+          </SettingsSection>
 
           <p className={clsx('px-5 text-[10.5px] leading-relaxed', t.faint)}>
             Map data © OpenStreetMap contributors, ODbL. Tiles by OpenFreeMap.

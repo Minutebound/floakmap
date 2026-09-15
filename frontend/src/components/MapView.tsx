@@ -4,10 +4,11 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import maplibregl from 'maplibre-gl'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CategoryKey, GeoData, Theme } from '@/lib/types'
-import { LAYER_BY_KEY, LAYER_META, LAYER_LABELS, layerColor } from '@/lib/types'
+import { LAYER_BY_KEY, LAYER_META, LAYER_LABELS, distanceMeters, layerColor } from '@/lib/types'
 import type { GeoFix } from '@/hooks/useLiveTracking'
 import { anchorFor, buildBasemapStyle, rasterFallbackStyle } from '@/lib/basemap'
 import type { BasemapOptions } from '@/lib/basemap'
+import { alpha } from './Sidebar'
 
 /**
  * The "you are here" marker: a chevron rather than a dot, because a dot tells
@@ -51,25 +52,39 @@ const POPUP: Record<Theme, {
 }
 
 /**
- * A category marker: the same glyph the layer filter shows, on a filled disc.
+ * A category marker, drawn to match the layer filter exactly.
  *
- * A field of identical coloured dots makes you consult the legend to read the
- * map. Carrying the glyph onto the marker removes that step — a P is parking
- * whether or not you remember which blue was which, and it still works for
- * anyone who cannot separate the four hues.
+ * Same rounded tile, same single-stroke glyph, same tinted fill and hairline
+ * border. The legend and the map are then literally the same object in two
+ * places, which is the cheapest possible way to make one explain the other.
  *
- * The glyph is white on the light theme and near-black on the dark one,
- * because dark-theme category colours are the light 400-weights: white on
- * #60a5fa is unreadable, while ink on it clears 7:1. The ring does the same
- * job in reverse, separating the disc from whichever land colour is behind it.
+ * The tints are composited against the panel surface rather than left
+ * translucent. A 10% wash over whatever road or park happens to be underneath
+ * would shift colour as you pan; flattening it first keeps every marker
+ * identical to its row in the rail no matter what it is standing on.
  */
-function markerSvg(iconPath: string, fill: string, dark: boolean): string {
-  const ink = dark ? '#0f141a' : '#ffffff'
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 32 32">
-  <circle cx="16" cy="16" r="12" fill="${fill}" stroke="${ink}" stroke-width="2.4"/>
-  <g transform="translate(16 16) scale(0.62) translate(-12 -12)" fill="none" stroke="${ink}"
-     stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="${iconPath}"/>
+function markerSvg(iconPaths: string[], color: string, dark: boolean): string {
+  // Same tile as the sidebar's LayerIcon, redrawn as a static SVG for the map.
+  // One function — Sidebar's `alpha()` — computes every colour both places
+  // use, so a palette change updates the rail and the map together.
+  //
+  //   fill    alpha(color, .16 dark / .10 light)   — the tinted square
+  //   border  alpha(color, .42 dark / .30 light)   — 1 unit, matching
+  //           Tailwind's default 1px `border` at the tile's 30px logical size
+  //   glyph   stroke=color, fill=none, 2 units      — identical treatment,
+  //           not white/ink, so the map and the rail read as one system
+  //
+  // rx=9 on a 30-unit tile reproduces `rounded-[9px]` at LayerIcon's default
+  // size=30 exactly. The icon is centred and scaled by 16.5/24 (0.6875),
+  // matching `width={size * 0.55}` on a 24×24 viewBox in LayerIcon.
+  const fill   = alpha(color, dark ? 0.16 : 0.10)
+  const border = alpha(color, dark ? 0.42 : 0.30)
+  const glyph  = iconPaths.map((d) => `<path d="${d}"/>`).join('')
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 30 30">
+  <rect x="0.5" y="0.5" width="29" height="29" rx="9" fill="${fill}" stroke="${border}" stroke-width="1"/>
+  <g transform="translate(15 15) scale(0.6875) translate(-12 -12)" fill="none" stroke="${color}"
+     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    ${glyph}
   </g>
 </svg>`
 }
@@ -95,11 +110,13 @@ export interface MapViewProps {
   userFix?: GeoFix | null
   /** Terrain / labels / POI switches from Settings. */
   mapOptions?: BasemapOptions
+  /** Reports a short human place name for the current position. */
+  onPlaceName?: (name: string | null) => void
 }
 
 export default function MapView({
   theme, layers, geoData, flyTo, onReady, showAttribution = true, userFix = null,
-  mapOptions,
+  mapOptions, onPlaceName,
 }: MapViewProps) {
   const containerRef  = useRef<HTMLDivElement>(null)
   const mapRef        = useRef<maplibregl.Map | null>(null)
@@ -143,6 +160,40 @@ export default function MapView({
   }, [showAttribution, mapCreated])
 
   /**
+   * Registers marker artwork on demand.
+   *
+   * `addImage` from an SVG data URI is asynchronous — the Image has to decode
+   * first. Adding the symbol layer in the same tick means it references an
+   * image that does not exist yet, and MapLibre renders nothing at all rather
+   * than waiting: you get bare halos and one warning in the console.
+   *
+   * `styleimagemissing` inverts that. The layer declares whatever name it
+   * likes, MapLibre asks for the bitmap when it first needs to paint it, and
+   * we answer. It also survives a style swap for free, because a new style
+   * re-asks for everything it is missing.
+   */
+  const registerImage = useCallback((map: maplibregl.Map, id: string) => {
+    if (map.hasImage(id)) return
+
+    let svg: string | null = null
+    if (id === 'user-arrow') {
+      svg = USER_ARROW
+    } else {
+      const m = /^marker-(\w+)-(light|dark)$/.exec(id)
+      if (m) {
+        const key = m[1] as CategoryKey
+        const meta = LAYER_BY_KEY[key]
+        if (meta) svg = markerSvg(meta.iconPaths, layerColor(key, m[2] as Theme), m[2] === 'dark')
+      }
+    }
+    if (!svg) return
+
+    const img = new Image(128, 128)
+    img.onload = () => { if (!map.hasImage(id)) map.addImage(id, img, { pixelRatio: 4 }) }
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+  }, [])
+
+  /**
    * The device-position layers: an accuracy halo and the heading chevron.
    *
    * Kept separate from the facility layers and added last, so the marker sits
@@ -168,15 +219,6 @@ export default function MapView({
       })
     }
 
-    // addImage is idempotent per style, and a style swap drops the image with
-    // everything else, so re-register whenever it has gone missing.
-    if (!map.hasImage('user-arrow')) {
-      const img = new Image(96, 96)
-      img.onload = () => {
-        if (!map.hasImage('user-arrow')) map.addImage('user-arrow', img, { pixelRatio: 4 })
-      }
-      img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(USER_ARROW)}`
-    }
 
     if (!map.getLayer('user-accuracy')) {
       map.addLayer({
@@ -223,6 +265,65 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /**
+   * Turn the fix into somewhere a person recognises.
+   *
+   * Read out of the vector tiles that are already downloaded rather than sent
+   * to a geocoder: no key, no rate limit, no third party learning where every
+   * user is standing, and it keeps working on a flaky connection because the
+   * answer is in tiles the map has already painted.
+   *
+   * Queries `place-query`, an invisible layer the style always declares, so
+   * this still resolves when someone has turned labels off in Settings.
+   * Returns null on the raster fallback, which has no vector source at all.
+   */
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapCreated || !onPlaceName) return
+    if (!userFix) { onPlaceName(null); return }
+
+    let cancelled = false
+
+    const resolve = () => {
+      if (cancelled) return
+      if (!map.getLayer('place-query')) { onPlaceName(null); return }
+
+      let feats: maplibregl.MapGeoJSONFeature[] = []
+      try {
+        feats = map.queryRenderedFeatures({ layers: ['place-query'] })
+      } catch { return }
+      if (!feats.length) return
+
+      // Nearest thing of each granularity, within a radius where naming it is
+      // still honest: a suburb two kilometres away is where you are, a city
+      // forty kilometres away is not.
+      const nearest = (classes: string[], maxM: number) => {
+        let best: { name: string; d: number } | null = null
+        for (const f of feats) {
+          const p = f.properties as Record<string, string>
+          if (!p?.name || !classes.includes(p.class)) continue
+          const g = f.geometry
+          if (g.type !== 'Point') continue
+          const d = distanceMeters(userFix.coords, g.coordinates as [number, number])
+          if (d <= maxM && (!best || d < best.d)) {
+            best = { name: (p['name:latin'] as string) || p.name, d }
+          }
+        }
+        return best?.name ?? null
+      }
+
+      const local = nearest(['neighbourhood', 'suburb', 'quarter', 'hamlet'], 2500)
+      const town  = nearest(['village', 'town', 'city'], 30000)
+      const label = [local, town].filter(Boolean).join(', ')
+      onPlaceName(label || null)
+    }
+
+    resolve()
+    // Tiles stream in, so the first attempt often has nothing to work with.
+    map.on('idle', resolve)
+    return () => { cancelled = true; map.off('idle', resolve) }
+  }, [userFix, mapCreated, onPlaceName])
+
   /** Push each new fix into the source. */
   useEffect(() => {
     const map = mapRef.current
@@ -249,19 +350,6 @@ export default function MapView({
 
       map.addSource(key, { type: 'geojson', data: geoDataRef.current[key] })
 
-      // Outer glow
-      map.addLayer({
-        id: `${key}-halo`,
-        type: 'circle',
-        source: key,
-        paint: {
-          'circle-radius':  ['interpolate', ['linear'], ['zoom'], 9, 11, 14, 18, 17, 26],
-          'circle-color':   color,
-          'circle-opacity': 0.18,
-        },
-        layout: { visibility: vis },
-      }, before)
-
       // Zoomed out, a glyph is smaller than the strokes it is made of, so the
       // marker degrades to a plain dot below z11 and only becomes an icon once
       // there is room to read one.
@@ -269,34 +357,27 @@ export default function MapView({
         id: `${key}-dot`,
         type: 'circle',
         source: key,
-        maxzoom: 11,
+        maxzoom: 10,
         paint: {
           'circle-radius':       ['interpolate', ['linear'], ['zoom'], 6, 3.5, 11, 6],
-          'circle-color':        color,
-          'circle-stroke-color': themeRef.current === 'dark' ? '#0f141a' : '#ffffff',
-          'circle-stroke-width': 1.6,
-          'circle-opacity':      0.95,
+          'circle-color':   color,
+          'circle-opacity': 0.9,
         },
         layout: { visibility: vis },
       }, before)
 
+      // The image is registered lazily by the styleimagemissing handler below,
+      // so the layer can reference it before it has finished decoding.
       const image = `marker-${key}-${themeRef.current}`
-      if (!map.hasImage(image)) {
-        const img = new Image(128, 128)
-        img.onload = () => { if (!map.hasImage(image)) map.addImage(image, img, { pixelRatio: 4 }) }
-        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
-          markerSvg(LAYER_BY_KEY[key].iconPath, color, themeRef.current === 'dark'),
-        )
-      }
 
       map.addLayer({
         id: `${key}-pin`,
         type: 'symbol',
         source: key,
-        minzoom: 11,
+        minzoom: 10,
         layout: {
           'icon-image': image,
-          'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.5, 14, 0.72, 17, 0.95],
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 0.5, 14, 0.78, 17, 1],
           // Every facility matters equally, so none of them get hidden by
           // collision. Allowing overlap also keeps a dense block of parking
           // legible as a cluster instead of thinning to one arbitrary pin.
@@ -330,6 +411,8 @@ export default function MapView({
       console.warn('[floakmap] vector basemap unavailable, using raster fallback')
       map.setStyle(rasterFallbackStyle(theme))
     })
+
+    map.on('styleimagemissing', (e) => registerImage(map, e.id))
 
     // Re-add our own layers after any style swap.
     map.on('styledata', () => {
@@ -428,8 +511,7 @@ export default function MapView({
       ;(Object.keys(layers) as CategoryKey[]).forEach((key) => {
         const vis: 'visible' | 'none' = layers[key] ? 'visible' : 'none'
         if (map.getLayer(`${key}-dot`)) {
-          map.setLayoutProperty(`${key}-dot`,  'visibility', vis)
-          map.setLayoutProperty(`${key}-halo`, 'visibility', vis)
+          map.setLayoutProperty(`${key}-dot`, 'visibility', vis)
           if (map.getLayer(`${key}-pin`)) map.setLayoutProperty(`${key}-pin`, 'visibility', vis)
         }
       })

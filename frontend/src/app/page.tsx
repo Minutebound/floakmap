@@ -31,6 +31,7 @@ import { useLiveTracking, useDemoToken, useGeolocation } from '@/hooks/useLiveTr
 import { ui } from '@/lib/theme'
 import type { CategoryKey, FlyTarget, GeoFeature, Theme } from '@/lib/types'
 import { SEED_DATA } from '@/lib/seed-data'
+import { reverseGeocode } from '@/lib/types'
 
 const MapView = dynamic(() => import('@/components/MapView'), {
   ssr: false,
@@ -48,6 +49,7 @@ const DEFAULT_LAYERS: Record<CategoryKey, boolean> = {
   parking: true,
   carwash: true,
   ev:      false,
+  gas:     false,
   auto:    false,
 }
 
@@ -58,6 +60,7 @@ const COUNTS: Record<CategoryKey, number> = {
   parking: SEED_DATA.parking.features.length,
   carwash: SEED_DATA.carwash.features.length,
   ev:      SEED_DATA.ev.features.length,
+  gas:     SEED_DATA.gas.features.length,
   auto:    SEED_DATA.auto.features.length,
 }
 
@@ -349,7 +352,19 @@ export default function HomePage() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [prefs, setPrefs] = useState<MapPrefs>(DEFAULT_MAP_PREFS)
   const [locationDismissed, setLocationDismissed] = useState(false)
-  const [placeName, setPlaceName] = useState<string | null>(null)
+  /**
+   * Two sources for "where am I", in priority order.
+   *
+   * MapView reads the real place name out of the vector tiles under the fix,
+   * which is accurate and free. It answers null whenever the tiles have not
+   * loaded, the zoom is too low to carry a place label, or the basemap has
+   * fallen back to raster — so a coordinate table covers those, naming the
+   * nearest metro. Tiles win when they have an answer; the table is what keeps
+   * the pill from showing bare decimals offline.
+   */
+  const [tilePlace, setTilePlace] = useState<string | null>(null)
+  const [nearestPlace, setNearestPlace] = useState<string | null>(null)
+  const placeName = tilePlace ?? nearestPlace
   const [profileName, setProfileName] = useState(DEFAULT_PROFILE_NAME)
 
   /**
@@ -433,6 +448,28 @@ export default function HomePage() {
 
     return () => { stop = true; clearInterval(poll); clearInterval(clock) }
   }, [joinSession])
+
+  /**
+   * Name the place under the current fix.
+   *
+   * Rounded to three decimals — about 100 m — so a stationary phone jittering
+   * by a few metres does not re-run this on every GPS tick. `reverseGeocode`
+   * is a local table today and an async call tomorrow; awaiting it now means
+   * that swap changes nothing here.
+   */
+  const fixKey = geo.fix
+    ? `${geo.fix.coords[0].toFixed(3)},${geo.fix.coords[1].toFixed(3)}`
+    : null
+
+  useEffect(() => {
+    if (!fixKey) { setNearestPlace(null); return }
+    let cancelled = false
+    const coords = fixKey.split(',').map(Number) as [number, number]
+    reverseGeocode(coords)
+      .then((place) => { if (!cancelled) setNearestPlace(place?.label ?? null) })
+      .catch(() => { if (!cancelled) setNearestPlace(null) })
+    return () => { cancelled = true }
+  }, [fixKey])
 
   const toggleLayer = useCallback((key: CategoryKey) => {
     setLayers((prev) => ({ ...prev, [key]: !prev[key] }))
@@ -569,7 +606,7 @@ export default function HomePage() {
           // chip has to stay for the attribution to remain visible.
           showAttribution={!isDesktop}
           userFix={geo.fix}
-          onPlaceName={setPlaceName}
+          onPlaceName={setTilePlace}
           mapOptions={{ terrain: prefs.terrain, labels: prefs.labels, poi: prefs.poi }}
         />
 
@@ -632,7 +669,7 @@ export default function HomePage() {
         {!panelOpen && (
         <Tabs
           theme={theme}
-          variant="pill"
+          variant="inset"
           size="sm"
           className="absolute right-3 top-3 z-10 hidden lg:flex"
           ariaLabel="Detail panel"
@@ -647,8 +684,34 @@ export default function HomePage() {
         />
         )}
 
-        {/* Zoom. Lifted clear of the bottom bar and the attribution chip. */}
+        {/* Zoom and recentre. Lifted clear of the bottom bar and the
+            attribution chip. */}
         <div className="absolute bottom-24 right-3 z-10 flex flex-col gap-1 lg:bottom-6 lg:right-4">
+          {/* Snap back to the device position. Panning away from yourself is
+              the easiest thing to do on a map and the most annoying to undo by
+              hand, so this is one tap. With no fix it asks for permission
+              instead of sitting there dead — the same button, still doing the
+              thing its arrow promises. */}
+          <button
+            onClick={() => {
+              if (geo.fix) setFlyTo({ center: geo.fix.coords, zoom: Math.max(15, map?.getZoom() ?? 15) })
+              else geo.request()
+            }}
+            aria-label={geo.fix ? 'Centre on my location' : 'Enable location'}
+            className={clsx(
+              'mb-1 flex h-9 w-9 items-center justify-center rounded-lg border shadow-sm transition-colors lg:h-8 lg:w-8',
+              t.panel, t.border, t.hover,
+              geo.fix ? 'text-signal' : t.faint,
+            )}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3.2" />
+              <circle cx="12" cy="12" r="8" />
+              <path d="M12 1.5v2.6M12 19.9v2.6M22.5 12h-2.6M4.1 12H1.5" />
+            </svg>
+          </button>
+
           {['+', '−'].map((label, i) => (
             <button
               key={label}

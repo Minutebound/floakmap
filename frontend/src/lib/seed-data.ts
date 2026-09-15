@@ -42,6 +42,17 @@ export const SEED_DATA: GeoData = {
       { type:'Feature', geometry:{ type:'Point', coordinates:[-104.7700,39.5040] }, properties:{ name:'Walmart Parker — Tesla Supercharger', address:'16950 Lincoln Ave', city:'Parker', state:'CO', category:'ev', network:'Tesla Supercharger', ports:4, level:'DC Fast Charge', free:'Tesla only' } },
     ],
   },
+  gas: {
+    type: 'FeatureCollection',
+    features: [
+      { type:'Feature', geometry:{ type:'Point', coordinates:[-104.7621,39.5169] }, properties:{ name:'King Soopers Fuel Center', address:'11020 S Parker Rd', city:'Parker', state:'CO', category:'gas', type:'Fuel', hours:'6:00–22:00', notes:'Loyalty discount with store card. Air and water on the south island.' } },
+      { type:'Feature', geometry:{ type:'Point', coordinates:[-104.7702,39.5241] }, properties:{ name:'Costco Gasoline Parker', address:'11330 S Parker Rd', city:'Parker', state:'CO', category:'gas', type:'Members only', hours:'6:00–21:30', notes:'Membership required. Queues form before 8:00 on weekends.' } },
+      { type:'Feature', geometry:{ type:'Point', coordinates:[-104.7548,39.5093] }, properties:{ name:'Conoco Mainstreet', address:'19565 E Mainstreet', city:'Parker', state:'CO', category:'gas', type:'Fuel · Diesel', hours:'24 hours', notes:'Diesel on the outer island. Attached convenience store.' } },
+      { type:'Feature', geometry:{ type:'Point', coordinates:[-104.7810,39.5155] }, properties:{ name:'7-Eleven Pine Dr', address:'10471 S Parker Rd', city:'Parker', state:'CO', category:'gas', type:'Fuel', hours:'24 hours' } },
+      { type:'Feature', geometry:{ type:'Point', coordinates:[-104.7461,39.5304] }, properties:{ name:'Murphy Express', address:'11402 Lincoln Ave', city:'Parker', state:'CO', category:'gas', type:'Fuel', hours:'5:00–23:00', notes:'Usually the cheapest regular in town.' } },
+      { type:'Feature', geometry:{ type:'Point', coordinates:[-104.7885,39.5021] }, properties:{ name:'Shell Hess Rd', address:'19499 Hess Rd', city:'Parker', state:'CO', category:'gas', type:'Fuel · Diesel', hours:'24 hours', notes:'Truck-friendly approach from the west.' } },
+    ],
+  },
   auto: {
     type: 'FeatureCollection',
     features: [
