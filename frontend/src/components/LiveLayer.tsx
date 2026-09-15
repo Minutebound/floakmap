@@ -17,6 +17,7 @@ import { useEffect, useRef } from 'react';
 import type maplibregl from 'maplibre-gl';
 import type { LiveState, Geofence } from '@/lib/live-types';
 import { KIND_COLOR } from '@/lib/live-types';
+import { anchorFor, BASEMAP_FONT } from '@/lib/basemap';
 
 interface Props {
   map: maplibregl.Map | null;
@@ -69,6 +70,11 @@ export default function LiveLayer({
     const install = () => {
       if (map.getSource('live-subjects')) return;
 
+      // Geofences tuck under the street network; everything live sits above
+      // the roads and below the place labels. See ANCHORS in lib/basemap.
+      const underRoads = anchorFor(map, 'underRoads');
+      const overRoads = anchorFor(map, 'overRoads');
+
       map.addSource('geofences', { type: 'geojson', data: empty() });
       map.addSource('live-trail', { type: 'geojson', data: empty() });
       map.addSource('live-heading', { type: 'geojson', data: empty() });
@@ -77,7 +83,7 @@ export default function LiveLayer({
       map.addLayer({
         id: 'geofence-fill', type: 'fill', source: 'geofences',
         paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.08 },
-      });
+      }, underRoads);
       map.addLayer({
         id: 'geofence-line', type: 'line', source: 'geofences',
         paint: {
@@ -86,7 +92,7 @@ export default function LiveLayer({
           'line-dasharray': [3, 2],
           'line-opacity': 0.7,
         },
-      });
+      }, underRoads);
 
       map.addLayer({
         id: 'live-trail-line', type: 'line', source: 'live-trail',
@@ -98,12 +104,12 @@ export default function LiveLayer({
           'line-opacity': 0.55,
           'line-blur': 0.5,
         },
-      });
+      }, overRoads);
 
       map.addLayer({
         id: 'live-heading-wedge', type: 'fill', source: 'live-heading',
         paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.9 },
-      });
+      }, overRoads);
 
       map.addLayer({
         id: 'live-halo', type: 'circle', source: 'live-subjects',
@@ -112,7 +118,7 @@ export default function LiveLayer({
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 10, 16, 26],
           'circle-opacity': ['case', ['get', 'stale'], 0.06, 0.18],
         },
-      });
+      }, overRoads);
       map.addLayer({
         id: 'live-dot', type: 'circle', source: 'live-subjects',
         paint: {
@@ -123,11 +129,15 @@ export default function LiveLayer({
           'circle-opacity': ['case', ['get', 'stale'], 0.45, 1],
           'circle-stroke-opacity': ['case', ['get', 'stale'], 0.5, 1],
         },
-      });
+      }, overRoads);
       map.addLayer({
         id: 'live-label', type: 'symbol', source: 'live-subjects',
         layout: {
           'text-field': ['get', 'label'],
+          // Without an explicit stack MapLibre asks for its built-in default
+          // ('Open Sans Regular'), which the tile server has no glyphs for,
+          // and every vehicle label silently fails to render.
+          'text-font': BASEMAP_FONT,
           'text-size': 12,
           'text-offset': [0, 1.5],
           'text-anchor': 'top',

@@ -30,6 +30,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      FLOAK_CORS_ORIGINS: ${FLOAK_CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:3002}
       FLOAK_REDIS_URL: redis://redis:6379/0
       FLOAK_JWT_SECRET: ${FLOAK_JWT_SECRET:-dev-secret-change-me}
       FLOAK_STALE_AFTER_SECONDS: ${FLOAK_STALE_AFTER_SECONDS:-180}

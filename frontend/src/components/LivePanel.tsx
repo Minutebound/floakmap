@@ -1,33 +1,47 @@
 'use client'
 
 /**
- * Roster and alert feed. Styled to match Sidebar.tsx — same theme prop, same
- * clsx pattern, same navy/stone palette.
+ * The Live tab: what is around you right now.
  *
- * Design note: the thing an operator actually distrusts about a tracking map
- * is freshness — not where the dot is, but whether the dot is still true. So
- * each row carries a bar that drains as the fix ages, rather than a
- * green/grey badge that only flips once it is already too late. You can see a
- * vehicle going quiet before it has gone quiet.
+ * Two kinds of thing appear here and they are deliberately not merged. People
+ * and vehicles moving on your net come first, because a moving dot is the only
+ * item on this list that can change while you are reading it. Fixed places —
+ * parking, car washes, charging, services — follow, sorted by distance.
+ *
+ * The list mirrors the layer filter rather than ignoring it. Turning off EV
+ * charging in the rail removes it from the map and from here, because two
+ * views of the same data that disagree about what is switched on is a bug
+ * people report as "the map is wrong".
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import clsx from 'clsx'
-import type { Theme } from '@/lib/types'
-import type { Alert, ConnectionState, LiveState } from '@/lib/live-types'
-import { KIND_COLOR } from '@/lib/live-types'
+import type { CategoryKey, DistanceUnit, GeoData, GeoFeature, Theme } from '@/lib/types'
+import {
+  LAYER_BY_KEY, LAYER_META, describeFacility, distanceMeters, formatDistance, layerColor,
+} from '@/lib/types'
+import { ui } from '@/lib/theme'
+import { LayerIcon, alpha } from './Sidebar'
+import type { ConnectionState, LiveState } from '@/lib/live-types'
 
-const STALE_AFTER_S = 180
+export interface NearbyResult {
+  feature: GeoFeature
+  category: CategoryKey
+  /** Metres from the device, or null when we have no fix. */
+  distance: number | null
+}
 
-interface LivePanelProps {
+export interface NearbyPanelProps {
   theme: Theme
+  /** Already filtered by the layer toggles and sorted by distance. */
+  results: NearbyResult[]
   subjects: LiveState[]
-  alerts: Alert[]
   connection: ConnectionState
   following: string | null
-  unreadCount: number
+  unit: DistanceUnit
+  hasFix: boolean
   onFollow: (id: string | null) => void
-  onAcknowledge: (id: string) => void
-  onClose?: () => void
+  onSelect: (feature: GeoFeature) => void
+  onRequestLocation: () => void
 }
 
 const CONNECTION_COPY: Record<ConnectionState, string> = {
@@ -37,242 +51,191 @@ const CONNECTION_COPY: Record<ConnectionState, string> = {
   closed:     'Offline',
 }
 
-function useClock(intervalMs = 1000) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs)
-    return () => clearInterval(id)
-  }, [intervalMs])
-  return now
+/**
+ * Build the Nearby list. Exported so the page can compute it once and hand
+ * the same array to both the panel and the tab count.
+ */
+export function buildNearby(
+  geoData: GeoData,
+  layers: Record<CategoryKey, boolean>,
+  origin: [number, number] | null,
+  limit = 60,
+): NearbyResult[] {
+  const rows: NearbyResult[] = []
+  for (const { key } of LAYER_META) {
+    if (!layers[key]) continue
+    for (const feature of geoData[key].features) {
+      rows.push({
+        feature,
+        category: key,
+        distance: origin ? distanceMeters(origin, feature.geometry.coordinates) : null,
+      })
+    }
+  }
+  // Without a fix there is no meaningful order, so fall back to alphabetical
+  // rather than leaving whatever order the seed file happened to have.
+  rows.sort((a, b) =>
+    a.distance !== null && b.distance !== null
+      ? a.distance - b.distance
+      : a.feature.properties.name.localeCompare(b.feature.properties.name))
+  return rows.slice(0, limit)
 }
 
-function ago(seconds: number): string {
-  if (seconds < 5)    return 'just now'
-  if (seconds < 60)   return `${Math.floor(seconds)}s ago`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
-  return `${Math.floor(seconds / 3600)}h ago`
-}
-
-export default function LivePanel({
-  theme, subjects, alerts, connection, following, unreadCount,
-  onFollow, onAcknowledge, onClose,
-}: LivePanelProps) {
-  const [tab, setTab]       = useState<'roster' | 'alerts'>('roster')
-  const [search, setSearch] = useState('')
-  const now  = useClock()
+export default function NearbyPanel({
+  theme, results, subjects, connection, following, unit, hasFix,
+  onFollow, onSelect, onRequestLocation,
+}: NearbyPanelProps) {
+  const t = ui(theme)
   const dark = theme === 'dark'
+  const [query, setQuery] = useState('')
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    return q ? subjects.filter((s) => s.label.toLowerCase().includes(q)) : subjects
-  }, [subjects, search])
-
-  const moving = subjects.filter((s) => (s.speed_kmh ?? 0) > 5).length
+    const q = query.trim().toLowerCase()
+    if (!q) return results
+    return results.filter(({ feature }) =>
+      feature.properties.name.toLowerCase().includes(q) ||
+      feature.properties.city.toLowerCase().includes(q))
+  }, [results, query])
 
   return (
-    <aside
-      className={clsx(
-        'flex h-full w-[272px] flex-shrink-0 flex-col border-l',
-        dark
-          ? 'bg-[#0f1525] border-[#252d42] text-slate-200'
-          : 'bg-white border-stone-200 text-zinc-700',
-      )}
-    >
-      {/* ── Header ───────────────────────────────────────────────────────── */}
-      <header
-        className={clsx(
-          'flex items-center gap-2 border-b px-4 py-3',
-          dark ? 'border-[#252d42]' : 'border-stone-200',
-        )}
-      >
-        <span
-          className={clsx(
-            'h-2 w-2 flex-shrink-0 rounded-full',
-            connection === 'live'       && 'bg-emerald-400',
-            connection === 'retrying'   && 'animate-pulse bg-amber-400',
-            connection === 'connecting' && 'animate-pulse bg-sky-400',
-            connection === 'closed'     && 'bg-zinc-400',
-          )}
-        />
-        <span className="text-[13px] font-semibold">{CONNECTION_COPY[connection]}</span>
-        <span className={clsx('ml-auto text-[11px] tabular-nums', dark ? 'text-slate-400' : 'text-zinc-400')}>
-          {moving} moving · {subjects.length} tracked
+    <div className="pb-4">
+      {/* Status strip */}
+      <div className={clsx('flex items-center gap-2 border-b px-4 py-2.5', t.border)}>
+        <span className={clsx(
+          'h-1.5 w-1.5 flex-shrink-0 rounded-full',
+          connection === 'live' ? 'bg-emerald-400' : 'bg-ink-300',
+        )} />
+        <span className="text-[11.5px] font-medium">{CONNECTION_COPY[connection]}</span>
+        <span className={clsx('ml-auto text-[11px] tabular-nums', t.faint)}>
+          {subjects.length} moving · {results.length} places
         </span>
-        {onClose && (
-          <button
-            onClick={onClose}
-            aria-label="Hide live panel"
-            className={clsx(
-              'ml-1 flex h-5 w-5 items-center justify-center rounded text-sm',
-              dark ? 'hover:bg-[#252d42]' : 'hover:bg-stone-100',
-            )}
-          >
-            ×
-          </button>
-        )}
-      </header>
+      </div>
 
-      {/* ── Tabs ─────────────────────────────────────────────────────────── */}
-      <nav className={clsx('flex border-b text-[13px]', dark ? 'border-[#252d42]' : 'border-stone-200')}>
-        {(['roster', 'alerts'] as const).map((key) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={clsx(
-              'flex-1 px-3 py-2 transition-colors',
-              tab === key
-                ? dark
-                  ? 'border-b-2 border-sky-400 font-medium text-slate-100'
-                  : 'border-b-2 border-blue-600 font-medium text-zinc-900'
-                : dark
-                  ? 'text-slate-400 hover:text-slate-200'
-                  : 'text-zinc-400 hover:text-zinc-700',
-            )}
-          >
-            {key === 'roster' ? 'Who’s out' : 'Attention'}
-            {key === 'alerts' && unreadCount > 0 && (
-              <span className="ml-1.5 rounded-full bg-rose-500 px-1.5 py-[1px] text-[10px] font-semibold text-white">
-                {unreadCount}
-              </span>
-            )}
-          </button>
-        ))}
-      </nav>
+      {!hasFix && (
+        <button
+          onClick={onRequestLocation}
+          className={clsx(
+            'm-4 flex w-[calc(100%-2rem)] items-start gap-3 rounded-xl border px-3.5 py-3 text-left',
+            'border-signal/40 bg-signal/10',
+          )}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+               className="mt-0.5 flex-shrink-0 text-signal">
+            <path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11z" /><circle cx="12" cy="10" r="2.6" />
+          </svg>
+          <span>
+            <span className="block text-[12.5px] font-semibold">Turn on location</span>
+            <span className={clsx('mt-0.5 block text-[11px] leading-snug', t.faint)}>
+              Distances and ordering need your position. Everything here is
+              alphabetical until then.
+            </span>
+          </span>
+        </button>
+      )}
 
-      {/* ── Roster ───────────────────────────────────────────────────────── */}
-      {tab === 'roster' ? (
-        <>
-          <div className="px-3 py-2">
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Find a vehicle or person"
+      {/* Moving subjects first — the only rows that change while you read */}
+      {subjects.length > 0 && (
+        <section className="px-4 pt-3">
+          <h3 className={clsx('mb-1.5 text-[11px] font-medium', t.faint)}>On the move</h3>
+          {subjects.map((s) => (
+            <button
+              key={s.subject_id}
+              onClick={() => onFollow(following === s.subject_id ? null : s.subject_id)}
               className={clsx(
-                'w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none transition-colors',
-                dark
-                  ? 'border-[#252d42] bg-[#161b2e] text-slate-200 placeholder:text-slate-500 focus:border-sky-500'
-                  : 'border-stone-200 bg-stone-50 text-zinc-700 placeholder:text-zinc-400 focus:border-blue-500',
+                '-mx-1 flex w-[calc(100%+0.5rem)] items-center gap-2.5 rounded-lg px-1 py-2 text-left',
+                following === s.subject_id ? (dark ? 'bg-ink-800' : 'bg-ink-50') : t.hover,
               )}
-            />
-          </div>
+            >
+              <span className={clsx(
+                'h-2 w-2 flex-shrink-0 rounded-full',
+                s.stale ? 'bg-ink-300' : 'bg-emerald-400',
+              )} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12.5px] font-medium">{s.label}</span>
+                <span className={clsx('block truncate text-[10.5px]', t.faint)}>
+                  {s.stale ? 'Signal lost' : s.speed_kmh
+                    ? `${Math.round(s.speed_kmh)} km/h`
+                    : 'Stopped'}
+                </span>
+              </span>
+              {following === s.subject_id && (
+                <span className="rounded-full bg-signal px-2 py-0.5 text-[10px] font-semibold text-ink-900">
+                  Following
+                </span>
+              )}
+            </button>
+          ))}
+        </section>
+      )}
 
-          <ul className="flex-1 overflow-y-auto pb-2">
-            {filtered.length === 0 && (
-              <li className={clsx('px-4 py-10 text-center text-[12px] leading-relaxed', dark ? 'text-slate-500' : 'text-zinc-400')}>
-                {subjects.length === 0
-                  ? 'Nothing is reporting yet. Run the simulator, or post a fix to /api/v1/ingest/positions.'
-                  : 'No match for that name.'}
-              </li>
-            )}
+      {/* Fixed places */}
+      <section className="px-4 pt-3">
+        <div className="mb-2 flex items-center gap-2">
+          <h3 className={clsx('flex-1 text-[11px] font-medium', t.faint)}>Around you</h3>
+        </div>
 
-            {filtered.map((s) => {
-              const age       = (now - new Date(s.recorded_at).getTime()) / 1000
-              const freshness = Math.max(0, 1 - age / STALE_AFTER_S)
-              const color     = s.color ?? KIND_COLOR[s.kind]
-              const active    = following === s.subject_id
+        <div className={clsx('mb-2 flex items-center gap-2 rounded-lg border px-3 py-2', t.base, t.border)}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               strokeWidth="2.2" strokeLinecap="round" className={t.faint}>
+            <circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by name or city"
+            className={clsx('min-w-0 flex-1 bg-transparent text-[12px] outline-none',
+                            t.text, dark ? 'placeholder:text-ink-500' : 'placeholder:text-ink-300')}
+          />
+        </div>
 
+        {filtered.length === 0 ? (
+          <p className={clsx('px-1 py-8 text-center text-[12px] leading-relaxed', t.faint)}>
+            {results.length === 0
+              ? 'No layers are switched on. Turn one on in the rail to see what is around you.'
+              : 'Nothing matches that filter.'}
+          </p>
+        ) : (
+          <ul className="space-y-0.5">
+            {filtered.map(({ feature, category, distance }) => {
+              const p = feature.properties
+              const color = layerColor(category, theme)
               return (
-                <li key={s.subject_id}>
+                <li key={`${category}-${p.name}-${feature.geometry.coordinates.join(',')}`}>
                   <button
-                    onClick={() => onFollow(active ? null : s.subject_id)}
-                    className={clsx(
-                      'w-full px-3.5 py-2.5 text-left transition-colors',
-                      active
-                        ? dark ? 'bg-[#1c2338]' : 'bg-stone-100'
-                        : dark ? 'hover:bg-[#161b2e]' : 'hover:bg-stone-50',
-                    )}
+                    onClick={() => onSelect(feature)}
+                    className={clsx('-mx-1 flex w-[calc(100%+0.5rem)] items-start gap-2.5 rounded-lg px-1 py-2 text-left',
+                                    t.hover)}
                   >
-                    <div className="flex items-baseline gap-2">
-                      <span
-                        className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                        style={{ background: color, opacity: s.stale ? 0.4 : 1 }}
-                      />
-                      <span className="truncate text-[13px] font-medium">{s.label}</span>
-                      <span className={clsx('ml-auto flex-shrink-0 text-[11px] tabular-nums', dark ? 'text-slate-400' : 'text-zinc-400')}>
-                        {s.share_mode === 'approximate'
-                          ? 'nearby'
-                          : (s.speed_kmh ?? 0) > 5
-                            ? `${Math.round(s.speed_kmh!)} km/h`
-                            : 'stopped'}
+                    <LayerIcon category={category} theme={theme} size={28} />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline gap-2">
+                        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{p.name}</span>
+                        {distance !== null && (
+                          <span className={clsx('flex-shrink-0 text-[10.5px] tabular-nums', t.faint)}>
+                            {formatDistance(distance, unit)}
+                          </span>
+                        )}
                       </span>
-                    </div>
-
-                    <div className="mt-1.5 flex items-center gap-2 pl-[18px]">
-                      <span className={clsx('h-[3px] flex-1 overflow-hidden rounded-full', dark ? 'bg-[#252d42]' : 'bg-stone-200')}>
-                        <span
-                          className="block h-full rounded-full transition-[width] duration-1000 ease-linear"
-                          style={{
-                            width: `${freshness * 100}%`,
-                            background: freshness > 0.3 ? color : '#f59e0b',
-                          }}
-                        />
+                      <span className={clsx('mt-0.5 block truncate text-[11px]', t.muted)}>
+                        {describeFacility(p) || LAYER_BY_KEY[category].label}
                       </span>
-                      <span className={clsx('flex-shrink-0 text-[10.5px] tabular-nums', dark ? 'text-slate-500' : 'text-zinc-400')}>
-                        {ago(age)}
+                      <span className={clsx('mt-0.5 block truncate text-[10.5px]', t.faint)}>
+                        {p.address}, {p.city}
                       </span>
-                    </div>
+                    </span>
+                    <span
+                      aria-hidden
+                      className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full"
+                      style={{ backgroundColor: alpha(color, 0.8) }}
+                    />
                   </button>
                 </li>
               )
             })}
           </ul>
-        </>
-      ) : (
-        /* ── Alerts ─────────────────────────────────────────────────────── */
-        <ul className="flex-1 overflow-y-auto">
-          {alerts.length === 0 && (
-            <li className={clsx('px-4 py-10 text-center text-[12px] leading-relaxed', dark ? 'text-slate-500' : 'text-zinc-400')}>
-              Nothing needs attention. Speeding, idling, lost signal and zone
-              crossings land here.
-            </li>
-          )}
-
-          {alerts.map((a) => (
-            <li
-              key={a.id}
-              className={clsx(
-                'border-b px-3.5 py-3',
-                dark ? 'border-[#1c2338]' : 'border-stone-100',
-                a.acknowledged_by && 'opacity-45',
-              )}
-            >
-              <div className="flex items-start gap-2">
-                <span
-                  className="mt-[6px] h-1.5 w-1.5 flex-shrink-0 rounded-full"
-                  style={{
-                    background:
-                      a.severity === 'critical' ? '#e11d48'
-                        : a.severity === 'warning' ? '#f59e0b'
-                          : '#64748b',
-                  }}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="text-[12.5px] leading-snug">{a.message}</p>
-                  <div className="mt-1 flex items-center gap-3">
-                    <span className={clsx('text-[10.5px] tabular-nums', dark ? 'text-slate-500' : 'text-zinc-400')}>
-                      {ago((now - new Date(a.raised_at).getTime()) / 1000)}
-                    </span>
-                    <button
-                      onClick={() => onFollow(a.subject_id)}
-                      className={clsx('text-[10.5px] underline-offset-2 hover:underline', dark ? 'text-slate-400' : 'text-zinc-500')}
-                    >
-                      Show on map
-                    </button>
-                    {!a.acknowledged_by && (
-                      <button
-                        onClick={() => onAcknowledge(a.id)}
-                        className={clsx('text-[10.5px] underline-offset-2 hover:underline', dark ? 'text-slate-400' : 'text-zinc-500')}
-                      >
-                        Mark handled
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </aside>
+        )}
+      </section>
+    </div>
   )
 }

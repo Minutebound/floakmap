@@ -4,7 +4,17 @@
 
 /* MapLibre GL CSS — imported in MapView.tsx via npm package */
 
-/* Popup styling overrides */
+/* ── Popups ──────────────────────────────────────────────────────────────────
+   Themed by a class on the popup itself (`floak-popup-dark`), set by MapView
+   when the popup is created. The previous `.dark .maplibregl-popup-content`
+   approach relied on the popup being a descendant of the themed element, and
+   it recoloured only the container while MapView's inline text colours stayed
+   light — dark-on-dark title, bright badge islands.
+
+   The tip is a CSS triangle, so its colour lives on a different border side
+   for each anchor. All eight get the treatment; only styling `-bottom` leaves
+   a white spike whenever a popup near the top of the map flips. */
+
 .maplibregl-popup-content {
   border-radius: 10px !important;
   padding: 12px 14px !important;
@@ -13,17 +23,54 @@
   max-width: 280px;
 }
 
-.maplibregl-popup-anchor-bottom .maplibregl-popup-tip {
+.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+  border-bottom-color: #ffffff;
+}
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
   border-top-color: #ffffff;
 }
+.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #ffffff; }
+.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #ffffff; }
 
-.dark .maplibregl-popup-content {
-  background: #1e293b !important;
-  color: #e2e8f0 !important;
+/* Dark */
+.floak-popup-dark .maplibregl-popup-content {
+  background: #1b2430 !important;
+  color: #e6edf3 !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45) !important;
 }
 
-.dark .maplibregl-popup-anchor-bottom .maplibregl-popup-tip {
-  border-top-color: #1e293b !important;
+.floak-popup-dark.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.floak-popup-dark.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.floak-popup-dark.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+  border-bottom-color: #1b2430;
+}
+.floak-popup-dark.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.floak-popup-dark.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.floak-popup-dark.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+  border-top-color: #1b2430;
+}
+.floak-popup-dark.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #1b2430; }
+.floak-popup-dark.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #1b2430; }
+
+/* The category eyebrow is the one popup colour that comes from brand, not from
+   theme. Held in a CSS variable so LAYER_META stays its only definition, and
+   lightened for the dark card — the raw brand blue reads 3.03:1 on #1b2430,
+   below the 4.5:1 floor. Mixing 55% brand into white takes every category
+   above 6.7:1 while keeping the hue recognisable. */
+.fm-cat {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 3px;
+  color: var(--fm-cat, #6b7280);
+}
+.floak-popup-dark .fm-cat {
+  color: color-mix(in srgb, var(--fm-cat, #6b7280) 55%, #ffffff);
 }
 
 .maplibregl-popup-close-button {
@@ -37,11 +84,21 @@
   background: transparent;
 }
 
+.floak-popup-dark .maplibregl-popup-close-button { color: #8b97a5; }
+.floak-popup-dark .maplibregl-popup-close-button:hover { color: #e6edf3; background: transparent; }
+
 /* Attribution compact */
 .maplibregl-ctrl-attrib {
   font-size: 10px !important;
   opacity: 0.7;
 }
+
+/* A white attribution chip on a near-black map is the last piece of default
+   MapLibre chrome that gives the dark theme away. */
+.dark .maplibregl-ctrl-attrib { background: rgba(27, 36, 48, 0.85) !important; }
+.dark .maplibregl-ctrl-attrib,
+.dark .maplibregl-ctrl-attrib a { color: #9aa7b4; }
+.dark .maplibregl-ctrl-attrib-button { filter: invert(0.85); }
 
 /* Scrollbar thin */
 ::-webkit-scrollbar { width: 5px; }

@@ -177,3 +177,116 @@ export function useDemoToken(
 
   return token;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Device location.
+
+   This app is a map of things near you, so the user's own position is the
+   first thing it needs, not an enhancement. The hook therefore asks on mount
+   rather than waiting for a button, and reports a status the UI can act on —
+   a denied permission has to surface immediately and explain itself, because
+   nothing else on screen makes sense without it.
+
+   watchPosition rather than getCurrentPosition: a stationary dot that never
+   updates is worse than no dot, and the watch also gives us heading, which is
+   what lets the marker point the way the person is facing.
+   ────────────────────────────────────────────────────────────────────────── */
+
+export type GeoStatus =
+  | 'idle'          // not asked yet (SSR / first paint)
+  | 'prompting'     // browser dialog is open, or we are waiting for a first fix
+  | 'granted'       // we have a position
+  | 'denied'        // the person said no, or the browser blocks it
+  | 'unavailable'   // no geolocation API, or an insecure origin
+  | 'error';        // timeout or position-unavailable
+
+export interface GeoFix {
+  /** [lon, lat] — GeoJSON order, ready to hand straight to MapLibre. */
+  coords: [number, number];
+  /** Metres. */
+  accuracy: number;
+  /** Degrees clockwise from true north, or null when standing still. */
+  heading: number | null;
+  /** Metres per second, or null. */
+  speed: number | null;
+  at: number;
+}
+
+export interface GeoResult {
+  status: GeoStatus;
+  fix: GeoFix | null;
+  message: string | null;
+  /** Ask again after a denial, or kick off a retry after an error. */
+  request: () => void;
+}
+
+export function useGeolocation(enabled = true): GeoResult {
+  const [status, setStatus] = useState<GeoStatus>('idle');
+  const [fix, setFix] = useState<GeoFix | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  // Heading is null whenever the device is not moving, which would make the
+  // arrow snap back to north every time someone stops at a light. Remember the
+  // last real bearing instead.
+  const lastHeading = useRef<number | null>(null);
+
+  const request = useCallback(() => {
+    setAttempt((n) => n + 1);
+    setStatus('prompting');
+    setMessage(null);
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setStatus('unavailable');
+      setMessage('This browser has no location support.');
+      return;
+    }
+    // Chrome and Safari both refuse geolocation outside a secure context, and
+    // the failure looks identical to a denial unless we say so.
+    if (typeof window !== 'undefined'
+        && !window.isSecureContext
+        && window.location.hostname !== 'localhost') {
+      setStatus('unavailable');
+      setMessage('Location needs HTTPS. Open this site over a secure connection.');
+      return;
+    }
+
+    setStatus((s) => (s === 'granted' ? s : 'prompting'));
+
+    const id = navigator.geolocation.watchPosition(
+      (pos) => {
+        const h = pos.coords.heading;
+        if (typeof h === 'number' && !Number.isNaN(h)) lastHeading.current = h;
+        setFix({
+          coords: [pos.coords.longitude, pos.coords.latitude],
+          accuracy: pos.coords.accuracy ?? 0,
+          heading: lastHeading.current,
+          speed: pos.coords.speed ?? null,
+          at: pos.timestamp,
+        });
+        setStatus('granted');
+        setMessage(null);
+      },
+      (err) => {
+        if (err.code === err.PERMISSION_DENIED) {
+          setStatus('denied');
+          setMessage('Location is blocked for this site.');
+        } else if (err.code === err.POSITION_UNAVAILABLE) {
+          setStatus('error');
+          setMessage('No position available. Check that location services are on.');
+        } else {
+          setStatus('error');
+          setMessage('Timed out waiting for a fix.');
+        }
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 },
+    );
+
+    return () => navigator.geolocation.clearWatch(id);
+  }, [enabled, attempt]);
+
+  return { status, fix, message, request };
+}

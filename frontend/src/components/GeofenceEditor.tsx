@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type maplibregl from 'maplibre-gl';
 import type { Geofence } from '@/lib/live-types';
+import { anchorFor } from '@/lib/basemap';
 
 interface Props {
   map: maplibregl.Map | null;
@@ -38,15 +39,19 @@ export default function GeofenceEditor({ map, apiBase, token, onSaved, onClose }
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
       });
+      // The draft is the thing the user is manipulating, so unlike saved
+      // geofences it goes above the roads rather than under them.
+      const before = anchorFor(map, 'overRoads');
+
       map.addLayer({
         id: 'geofence-draft-fill', type: 'fill', source: DRAFT_SOURCE,
         filter: ['==', '$type', 'Polygon'],
         paint: { 'fill-color': '#7c5cff', 'fill-opacity': 0.12 },
-      });
+      }, before);
       map.addLayer({
         id: 'geofence-draft-line', type: 'line', source: DRAFT_SOURCE,
         paint: { 'line-color': '#7c5cff', 'line-width': 2, 'line-dasharray': [2, 1.5] },
-      });
+      }, before);
       map.addLayer({
         id: 'geofence-draft-vertex', type: 'circle', source: DRAFT_SOURCE,
         filter: ['==', '$type', 'Point'],
@@ -56,7 +61,7 @@ export default function GeofenceEditor({ map, apiBase, token, onSaved, onClose }
           'circle-stroke-color': '#7c5cff',
           'circle-stroke-width': 2,
         },
-      });
+      }, before);
     }
     map.getCanvas().style.cursor = 'crosshair';
     return () => {

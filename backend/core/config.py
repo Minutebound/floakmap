@@ -1,5 +1,6 @@
 """Runtime configuration for the live-tracking layer."""
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings
 
 
@@ -30,6 +31,22 @@ class Settings(BaseSettings):
     speeding_kmh: float = 120.0
     idle_minutes: int = 15
 
+    # --- cors -------------------------------------------------------------
+    # Comma-separated, so it survives a single FLOAK_CORS_ORIGINS env var
+    # without needing JSON quoting in docker-compose.
+    #
+    # allow_credentials=True in main.py means "*" is NOT a usable shortcut —
+    # browsers reject a wildcard origin when credentials are on. Every origin
+    # the frontend is served from has to be listed here.
+    cors_origins: str = (
+        "http://localhost:3000,"
+        "http://localhost:3001,"
+        "http://localhost:3002,"
+        "http://127.0.0.1:3000,"
+        "http://127.0.0.1:3001,"
+        "http://127.0.0.1:3002"
+    )
+
     class Config:
         env_prefix = "FLOAK_"
         env_file = ".env"
@@ -38,3 +55,13 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def cors_origins_list() -> list[str]:
+    """Settings.cors_origins split into the list CORSMiddleware wants.
+
+    Deliberately a module-level function rather than a property on Settings:
+    a property appended to the end of that class lands inside `class Config`
+    by accident, and pydantic then reports it as a missing attribute.
+    """
+    return [o.strip() for o in get_settings().cors_origins.split(",") if o.strip()]

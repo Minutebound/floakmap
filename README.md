@@ -86,7 +86,7 @@ floakmap/
         │   ├── MapView.tsx       ← UPDATED  vector basemap, onReady, style-swap safe
         │   ├── Sidebar.tsx       ← unchanged
         │   ├── LiveLayer.tsx     ← NEW  animated subjects, trails, zones
-        │   ├── NetPanel.tsx      ← NEW  host: code, queue, roster
+        │   ├── NetworkPanel.tsx      ← NEW  host: code, queue, roster
         │   ├── JoinNet.tsx       ← NEW  joiner: code entry, fingerprint, wait
         │   ├── LivePanel.tsx     ← NEW  roster and alert feed
         │   ├── GeofenceEditor.tsx ← NEW  draw a zone on the map

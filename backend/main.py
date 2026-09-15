@@ -5,7 +5,8 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.config import get_settings
+# near the top, replace the existing core.config import
+from core.config import cors_origins_list, get_settings
 from routers import auth, facilities, fleet, floaknet, ingest, trips
 from services import alerts as alert_rules
 from services import registry
@@ -55,7 +56,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=cors_origins_list(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,26 +1,77 @@
 # ── FloakMap — frontend only ─────────────────────────────────────────────────
-#   cd frontend && docker compose up --build     →  http://localhost:3000
+#   cd frontend && docker compose up            →  http://localhost:3002
+#
+# The default service runs `next dev` against a bind mount of your working
+# tree, so saving a file hot-reloads the browser. No rebuild, no restart.
+#
+# Production build (standalone output):
+#   docker compose --profile prod up --build    →  http://localhost:3002
+#
+# Port 3002 inside AND outside, deliberately. Next's dev HMR socket and the
+# "ready on ..." URL both use the port Next was told to bind, so mapping
+# 3002:3000 leaves HMR pointing at a port that isn't published.
 #
 # Expects the backend to already be running (cd ../backend && docker compose up).
-# The map still renders without it: lib/api.ts falls back to bundled seed data,
-# and the live panel simply shows "Offline".
-#
-# NEXT_PUBLIC_API_URL is baked in at build time and used for both the REST
-# calls and the websocket, so point it at wherever the browser can reach the
-# API — not at a Docker-internal hostname.
 
 services:
 
+  # ── dev: hot reload ────────────────────────────────────────────────────────
   frontend:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      # Stop at the deps stage: node_modules only, no `next build`.
+      target: deps
     container_name: floakmap-web
+    command: npm run dev -- --hostname 0.0.0.0 --port 3002
     ports:
-      - "3000:3000"
+      - "3002:3002"
+    environment:
+      NODE_ENV: development
+      PORT: "3002"
+      # In dev, NEXT_PUBLIC_ vars are read at runtime — no rebuild to change it.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      # Bind mounts don't deliver inotify events on Docker Desktop (macOS and
+      # Windows). Polling is what actually makes save-to-reload work there.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      # Your working tree, live inside the container.
+      - .:/app
+      # Anonymous volume: keeps the image's node_modules from being shadowed
+      # by the bind mount above. Must come after it.
+      - /app/node_modules
+      # Named volume for the dev build cache — survives restarts, and keeps
+      # .next out of your host working tree.
+      - next-cache:/app/.next
     restart: unless-stopped
     extra_hosts:
       # Lets the container reach a backend running on the host machine.
       - "host.docker.internal:host-gateway"
+
+  # ── prod: standalone build ─────────────────────────────────────────────────
+  # NEXT_PUBLIC_API_URL is baked in at build time here and used for both the
+  # REST calls and the websocket, so point it at wherever the browser can reach
+  # the API — not at a Docker-internal hostname.
+  frontend-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: floakmap-web-prod
+    profiles: ["prod"]
+    ports:
+      - "3002:3002"
+    environment:
+      # server.js reads PORT at runtime; the Dockerfile's default is 3000.
+      PORT: "3002"
+      HOSTNAME: "0.0.0.0"
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  next-cache:

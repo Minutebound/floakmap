@@ -2,14 +2,77 @@
 
 import 'maplibre-gl/dist/maplibre-gl.css'
 import maplibregl from 'maplibre-gl'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CategoryKey, GeoData, Theme } from '@/lib/types'
-import { LAYER_META, LAYER_LABELS } from '@/lib/types'
-import { buildBasemapStyle, rasterFallbackStyle } from '@/lib/basemap'
+import { LAYER_BY_KEY, LAYER_META, LAYER_LABELS, layerColor } from '@/lib/types'
+import type { GeoFix } from '@/hooks/useLiveTracking'
+import { anchorFor, buildBasemapStyle, rasterFallbackStyle } from '@/lib/basemap'
+import type { BasemapOptions } from '@/lib/basemap'
 
-const COLORS: Record<CategoryKey, string> = Object.fromEntries(
-  LAYER_META.map(({ key, color }) => [key, color]),
-) as Record<CategoryKey, string>
+/**
+ * The "you are here" marker: a chevron rather than a dot, because a dot tells
+ * you where you are and a chevron also tells you which way you are pointing,
+ * which is the question someone actually has while navigating. White outline
+ * so it survives both the cream land of the light basemap and the near-black
+ * of the dark one without needing a per-theme variant.
+ */
+const USER_ARROW = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 48 48">
+  <path d="M24 4 39 40 24 32 9 40Z" fill="#ff5555" stroke="#ffffff" stroke-width="3"
+        stroke-linejoin="round"/>
+</svg>`
+
+/**
+ * Popup colours per theme.
+ *
+ * These were hardcoded light-mode values, which meant dark mode rendered
+ * near-black text on the dark popup background from globals.css, and left the
+ * tag badges as bright light-grey islands. Popups are DOM, not canvas, so the
+ * basemap palette does not reach them — they need their own tokens.
+ *
+ * `badgeText` clears 4.5:1 against `badgeBg` in both themes.
+ */
+const POPUP: Record<Theme, {
+  title: string; body: string; muted: string; badgeBg: string; badgeText: string
+}> = {
+  light: {
+    title:     '#111827',
+    body:      '#6b7280',
+    muted:     '#9ca3af',
+    badgeBg:   '#f3f4f6',
+    badgeText: '#374151',
+  },
+  dark: {
+    title:     '#e6edf3',
+    body:      '#9aa7b4',
+    muted:     '#8390a0',
+    badgeBg:   '#232d39',
+    badgeText: '#cdd7e2',
+  },
+}
+
+/**
+ * A category marker: the same glyph the layer filter shows, on a filled disc.
+ *
+ * A field of identical coloured dots makes you consult the legend to read the
+ * map. Carrying the glyph onto the marker removes that step — a P is parking
+ * whether or not you remember which blue was which, and it still works for
+ * anyone who cannot separate the four hues.
+ *
+ * The glyph is white on the light theme and near-black on the dark one,
+ * because dark-theme category colours are the light 400-weights: white on
+ * #60a5fa is unreadable, while ink on it clears 7:1. The ring does the same
+ * job in reverse, separating the disc from whichever land colour is behind it.
+ */
+function markerSvg(iconPath: string, fill: string, dark: boolean): string {
+  const ink = dark ? '#0f141a' : '#ffffff'
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 32 32">
+  <circle cx="16" cy="16" r="12" fill="${fill}" stroke="${ink}" stroke-width="2.4"/>
+  <g transform="translate(16 16) scale(0.62) translate(-12 -12)" fill="none" stroke="${ink}"
+     stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="${iconPath}"/>
+  </g>
+</svg>`
+}
 
 export interface MapViewProps {
   theme: Theme
@@ -18,9 +81,26 @@ export interface MapViewProps {
   flyTo?: { center: [number, number]; zoom: number } | null
   /** Hands the map instance up once it has loaded, so LiveLayer can draw on it. */
   onReady?: (map: maplibregl.Map) => void
+  /**
+   * Draw MapLibre's attribution control on the map itself.
+   *
+   * ODbL requires the credit to be visible wherever the map is, not merely
+   * present somewhere in the product. On desktop the left rail is always on
+   * screen and carries it, so the on-map chip is redundant and takes a corner
+   * the zoom controls want. On narrow screens the rail is a drawer that is
+   * usually closed, so the chip has to stay.
+   */
+  showAttribution?: boolean
+  /** Current device position, or null while we have no fix. */
+  userFix?: GeoFix | null
+  /** Terrain / labels / POI switches from Settings. */
+  mapOptions?: BasemapOptions
 }
 
-export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapViewProps) {
+export default function MapView({
+  theme, layers, geoData, flyTo, onReady, showAttribution = true, userFix = null,
+  mapOptions,
+}: MapViewProps) {
   const containerRef  = useRef<HTMLDivElement>(null)
   const mapRef        = useRef<maplibregl.Map | null>(null)
   const usingFallback = useRef(false)
@@ -28,6 +108,129 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
   geoDataRef.current  = geoData
   const layersRef     = useRef(layers)
   layersRef.current   = layers
+  // Click handlers are registered once on `load`, so they close over the
+  // first render's theme. Read it through a ref instead, or popups keep the
+  // colours the app started in.
+  const themeRef      = useRef(theme)
+  themeRef.current    = theme
+  const optionsRef    = useRef(mapOptions)
+  optionsRef.current  = mapOptions
+  const userFixRef    = useRef(userFix)
+  userFixRef.current  = userFix
+  // Effects that reach into the map instance need to re-run once it exists;
+  // a ref alone never triggers them. Flipped as soon as the instance is
+  // constructed, not on `load` — controls can be added straight away, and
+  // waiting for tiles would leave the attribution missing on a slow network.
+  const [mapCreated, setMapCreated] = useState(false)
+
+  // Attribution follows the breakpoint, so it is added and removed rather
+  // than set once at construction.
+  const attribRef = useRef<maplibregl.AttributionControl | null>(null)
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (showAttribution && !attribRef.current) {
+      attribRef.current = new maplibregl.AttributionControl({ compact: true })
+      // Top-right, not the conventional bottom-right. This control only exists
+      // below `lg`, where the bottom of the map is covered by the Live/Network
+      // sheet and the nav bar — an attribution nobody can see does not satisfy
+      // ODbL. Top-right is empty at these widths; the status pill is top-left.
+      map.addControl(attribRef.current, 'top-right')
+    } else if (!showAttribution && attribRef.current) {
+      map.removeControl(attribRef.current)
+      attribRef.current = null
+    }
+  }, [showAttribution, mapCreated])
+
+  /**
+   * The device-position layers: an accuracy halo and the heading chevron.
+   *
+   * Kept separate from the facility layers and added last, so the marker sits
+   * above every dot on the map. Where you are is never the thing that should
+   * be occluded.
+   */
+  const userFeatures = (fix: GeoFix | null): GeoJSON.FeatureCollection => ({
+    type: 'FeatureCollection',
+    features: fix
+      ? [{
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: fix.coords },
+          properties: { heading: fix.heading ?? 0 },
+        }]
+      : [],
+  })
+
+  const installUserLayers = useCallback((map: maplibregl.Map) => {
+    if (!map.getSource('user-location')) {
+      map.addSource('user-location', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+    }
+
+    // addImage is idempotent per style, and a style swap drops the image with
+    // everything else, so re-register whenever it has gone missing.
+    if (!map.hasImage('user-arrow')) {
+      const img = new Image(96, 96)
+      img.onload = () => {
+        if (!map.hasImage('user-arrow')) map.addImage('user-arrow', img, { pixelRatio: 4 })
+      }
+      img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(USER_ARROW)}`
+    }
+
+    if (!map.getLayer('user-accuracy')) {
+      map.addLayer({
+        id: 'user-accuracy',
+        type: 'circle',
+        source: 'user-location',
+        paint: {
+          // Real metre-accurate radius needs a projection trick; at the zooms
+          // this app is used at, a zoom-scaled halo reads the same and costs
+          // nothing.
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 8, 14, 22, 18, 46],
+          'circle-color': '#ff5555',
+          'circle-opacity': 0.14,
+          'circle-stroke-color': '#ff5555',
+          'circle-stroke-width': 1,
+          'circle-stroke-opacity': 0.35,
+        },
+      })
+    }
+
+    if (!map.getLayer('user-arrow')) {
+      map.addLayer({
+        id: 'user-arrow',
+        type: 'symbol',
+        source: 'user-location',
+        layout: {
+          'icon-image': 'user-arrow',
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 0.5, 16, 0.85],
+          // Rotate with the map, so the chevron keeps pointing at the real
+          // bearing when the map itself is rotated.
+          'icon-rotation-alignment': 'map',
+          'icon-rotate': ['coalesce', ['get', 'heading'], 0],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+      })
+    }
+
+    // A style swap rebuilds this source empty. Without replaying the last fix
+    // here, the arrow vanishes the first time someone toggles the theme — or
+    // silently at startup, when the raster fallback restyles the map.
+    const src = map.getSource('user-location') as maplibregl.GeoJSONSource | undefined
+    src?.setData(userFeatures(userFixRef.current))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** Push each new fix into the source. */
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapCreated) return
+    const src = map.getSource('user-location') as maplibregl.GeoJSONSource | undefined
+    if (!src) return
+    src.setData(userFeatures(userFix))
+  }, [userFix, mapCreated])
 
   /**
    * Adds the facility sources and layers. Safe to call repeatedly: a style
@@ -35,7 +238,12 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
    * style did not declare, so this runs again on every `styledata`.
    */
   const installFacilityLayers = useCallback((map: maplibregl.Map) => {
-    LAYER_META.forEach(({ key, color }) => {
+    // Slot the dots above the road network but below the place labels, so a
+    // dense cluster of facilities never buries the city name underneath it.
+    const before = anchorFor(map, 'overRoads')
+
+    LAYER_META.forEach(({ key }) => {
+      const color = layerColor(key, themeRef.current)
       if (map.getSource(key)) return
       const vis: 'visible' | 'none' = layersRef.current[key] ? 'visible' : 'none'
 
@@ -52,22 +260,51 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
           'circle-opacity': 0.18,
         },
         layout: { visibility: vis },
-      })
+      }, before)
 
-      // Main dot
+      // Zoomed out, a glyph is smaller than the strokes it is made of, so the
+      // marker degrades to a plain dot below z11 and only becomes an icon once
+      // there is room to read one.
       map.addLayer({
         id: `${key}-dot`,
         type: 'circle',
         source: key,
+        maxzoom: 11,
         paint: {
-          'circle-radius':       ['interpolate', ['linear'], ['zoom'], 9, 5, 14, 9, 17, 14],
+          'circle-radius':       ['interpolate', ['linear'], ['zoom'], 6, 3.5, 11, 6],
           'circle-color':        color,
-          'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 9, 1.5, 14, 2.5],
-          'circle-opacity':      0.93,
+          'circle-stroke-color': themeRef.current === 'dark' ? '#0f141a' : '#ffffff',
+          'circle-stroke-width': 1.6,
+          'circle-opacity':      0.95,
         },
         layout: { visibility: vis },
-      })
+      }, before)
+
+      const image = `marker-${key}-${themeRef.current}`
+      if (!map.hasImage(image)) {
+        const img = new Image(128, 128)
+        img.onload = () => { if (!map.hasImage(image)) map.addImage(image, img, { pixelRatio: 4 }) }
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+          markerSvg(LAYER_BY_KEY[key].iconPath, color, themeRef.current === 'dark'),
+        )
+      }
+
+      map.addLayer({
+        id: `${key}-pin`,
+        type: 'symbol',
+        source: key,
+        minzoom: 11,
+        layout: {
+          'icon-image': image,
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.5, 14, 0.72, 17, 0.95],
+          // Every facility matters equally, so none of them get hidden by
+          // collision. Allowing overlap also keeps a dense block of parking
+          // legible as a cluster instead of thinning to one arbitrary pin.
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          visibility: vis,
+        },
+      }, before)
     })
   }, [])
 
@@ -77,16 +314,11 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: buildBasemapStyle(theme),
+      style: buildBasemapStyle(theme, optionsRef.current),
       center: [-104.762, 39.51],
       zoom: 12.2,
       attributionControl: false,
     })
-
-    map.addControl(
-      new maplibregl.AttributionControl({ compact: true }),
-      'bottom-right',
-    )
 
     // If the vector tiles are unreachable, fall back to the CartoDB raster
     // rather than leaving a blank canvas. Once is enough — retrying in a loop
@@ -100,19 +332,25 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
     })
 
     // Re-add our own layers after any style swap.
-    map.on('styledata', () => installFacilityLayers(map))
+    map.on('styledata', () => {
+      installFacilityLayers(map)
+      installUserLayers(map)
+    })
 
     // Click handlers live on the map, not the style, so they are registered
     // once here — re-registering per styledata would stack duplicate popups.
     map.on('load', () => {
       installFacilityLayers(map)
+      installUserLayers(map)
 
-      LAYER_META.forEach(({ key, color }) => {
-        map.on('click', `${key}-dot`, (e) => {
+      LAYER_META.forEach(({ key }) => {
+        const onClick = (e: maplibregl.MapLayerMouseEvent) => {
           if (!e.features?.length) return
           const feat   = e.features[0]
           const coords = (feat.geometry as GeoJSON.Point).coordinates as [number, number]
           const p      = feat.properties as Record<string, string | number>
+
+          const c = POPUP[themeRef.current]
 
           const tagHtml = (
             [p.type, p.spaces && `${p.spaces} spaces`, p.free && `Free: ${p.free}`,
@@ -121,26 +359,35 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
           )
             .map(
               (t) =>
-                `<span style="font-size:10.5px;background:#f3f4f6;border-radius:4px;padding:2px 7px;color:#374151;white-space:nowrap">${t}</span>`,
+                `<span style="font-size:10.5px;background:${c.badgeBg};border-radius:4px;padding:2px 7px;color:${c.badgeText};white-space:nowrap">${t}</span>`,
             )
             .join('')
 
-          new maplibregl.Popup({ closeButton: true, maxWidth: '290px', offset: 14 })
+          new maplibregl.Popup({
+            closeButton: true, maxWidth: '290px', offset: 14,
+            className: themeRef.current === 'dark' ? 'floak-popup floak-popup-dark' : 'floak-popup',
+          })
             .setLngLat(coords)
             .setHTML(
               `<div style="font-family:system-ui,sans-serif;line-height:1.45">
-                <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:${color};margin-bottom:3px">${LAYER_LABELS[key]}</div>
-                <div style="font-size:14px;font-weight:600;color:#111827;margin-bottom:2px">${p.name}</div>
-                <div style="font-size:11.5px;color:#6b7280;margin-bottom:6px">${p.address}, ${p.city}, ${p.state}</div>
-                ${p.notes ? `<div style="font-size:11px;color:#9ca3af;margin-bottom:6px">${p.notes}</div>` : ''}
+                <div class="fm-cat" style="--fm-cat:${layerColor(key, themeRef.current)}">${LAYER_LABELS[key]}</div>
+                <div style="font-size:14px;font-weight:600;color:${c.title};margin-bottom:2px">${p.name}</div>
+                <div style="font-size:11.5px;color:${c.body};margin-bottom:6px">${p.address}, ${p.city}, ${p.state}</div>
+                ${p.notes ? `<div style="font-size:11px;color:${c.muted};margin-bottom:6px">${p.notes}</div>` : ''}
                 <div style="display:flex;flex-wrap:wrap;gap:4px">${tagHtml}</div>
               </div>`,
             )
             .addTo(map)
-        })
+        }
 
-        map.on('mouseenter', `${key}-dot`, () => { map.getCanvas().style.cursor = 'pointer' })
-        map.on('mouseleave', `${key}-dot`, () => { map.getCanvas().style.cursor = '' })
+        // Both the dot and the pin are clickable: they swap at z11 and a
+        // handler on only one of them makes the map stop responding at a
+        // seemingly arbitrary zoom.
+        ;[`${key}-dot`, `${key}-pin`].forEach((id) => {
+          map.on('click', id, onClick)
+          map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer' })
+          map.on('mouseleave', id, () => { map.getCanvas().style.cursor = '' })
+        })
       })
 
       // Live tracking layers are added on top of these, once the map exists.
@@ -148,6 +395,7 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
     })
 
     mapRef.current = map
+    setMapCreated(true)
 
     return () => {
       map.remove()
@@ -164,9 +412,13 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
     const map = mapRef.current
     if (!map) return
     map.setStyle(
-      usingFallback.current ? rasterFallbackStyle(theme) : buildBasemapStyle(theme),
+      usingFallback.current ? rasterFallbackStyle(theme) : buildBasemapStyle(theme, optionsRef.current),
     )
-  }, [theme])
+    // Settings changes (terrain, labels, POIs) alter the style's layer list,
+    // so they need the same rebuild the theme does. Serialised rather than
+    // passed by reference: the object is rebuilt on every settings render and
+    // would otherwise re-style the map on every keystroke elsewhere.
+  }, [theme, JSON.stringify(mapOptions ?? {})])
 
   // ── Sync layer visibility ──────────────────────────────────────────────────
   useEffect(() => {
@@ -178,6 +430,7 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
         if (map.getLayer(`${key}-dot`)) {
           map.setLayoutProperty(`${key}-dot`,  'visibility', vis)
           map.setLayoutProperty(`${key}-halo`, 'visibility', vis)
+          if (map.getLayer(`${key}-pin`)) map.setLayoutProperty(`${key}-pin`, 'visibility', vis)
         }
       })
     }
@@ -190,5 +443,10 @@ export default function MapView({ theme, layers, geoData, flyTo, onReady }: MapV
     mapRef.current?.flyTo({ center: flyTo.center, zoom: flyTo.zoom, speed: 1.4, curve: 1.3 })
   }, [flyTo])
 
-  return <div ref={containerRef} className="absolute inset-0" />
+  // Sized, not positioned. maplibre-gl.css sets `.maplibregl-map { position:
+  // relative }` on this element, and because that stylesheet loads after
+  // Tailwind's utilities it beats `.absolute` at equal specificity — leaving a
+  // relatively-positioned box whose `inset-0` does nothing and whose height
+  // collapses to zero. Filling the parent avoids the fight entirely.
+  return <div ref={containerRef} className="h-full w-full" />
 }
