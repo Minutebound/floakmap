@@ -15,12 +15,14 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import clsx from 'clsx'
+import Link from 'next/link'
+import Logo from '@/components/Logo'
 import type { CategoryKey, Theme, FlyTarget, DistanceUnit } from '@/lib/types'
 import { LAYER_META, layerColor } from '@/lib/types'
 import type { GeoStatus } from '@/hooks/useLiveTracking'
 import { ui } from '@/lib/theme'
 
-const CITIES: Record<string, FlyTarget> = {
+export const CITIES: Record<string, FlyTarget> = {
   'parker':            { center: [-104.762, 39.51],  zoom: 12.2 },
   'parker, co':        { center: [-104.762, 39.51],  zoom: 12.2 },
   '80134':             { center: [-104.762, 39.51],  zoom: 12.2 },
@@ -98,6 +100,14 @@ export const IconLayers = (
   </svg>
 )
 
+export const IconGear = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+)
+
 /** #rrggbb + an alpha 0–1, as an 8-digit hex. */
 export const alpha = (hex: string, a: number): string =>
   hex + Math.round(Math.max(0, Math.min(1, a)) * 255).toString(16).padStart(2, '0')
@@ -149,19 +159,19 @@ function Switch({ on }: { on: boolean }) {
     <span
       aria-hidden
       className={clsx(
-        'relative flex-shrink-0 w-8 h-[18px] rounded-full transition-colors duration-200',
+        'relative flex-shrink-0 w-9 h-[22px] rounded-full transition-colors duration-200',
         on ? 'bg-signal' : 'bg-ink-200 dark:bg-ink-700',
       )}
     >
       <span
-        className="absolute top-[2px] left-[2px] w-[14px] h-[14px] rounded-full bg-white shadow-sm transition-transform duration-200 motion-reduce:transition-none"
+        className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200 motion-reduce:transition-none"
         style={{ transform: on ? 'translateX(14px)' : 'translateX(0)' }}
       />
     </span>
   )
 }
 
-function initialsOf(name: string): string {
+export function initialsOf(name: string): string {
   const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return '?'
   const take = (w: string) => [...w][0] ?? ''
@@ -180,18 +190,24 @@ interface SidebarProps {
   onThemeToggle: () => void
   onFlyTo: (dest: FlyTarget) => void
   onOpenSettings?: () => void
+  /** False shows Sign up / Log in; true shows the profile row + Log out.
+   *  Settings itself (the gear) is reachable either way — only the Profile
+   *  section inside it needs an account. */
+  signedIn?: boolean
+  onSignOut?: () => void
   /** Only rendered below `lg`, where the rail is a drawer. */
   onClose?: () => void
 }
 
 export default function Sidebar({
   theme, layers, counts, profileName = 'Guest',
-  onLayerToggle, onThemeToggle, onFlyTo, onOpenSettings, onClose,
+  onLayerToggle, onThemeToggle, onFlyTo, onOpenSettings, signedIn, onSignOut, onClose,
 }: SidebarProps) {
   const t = ui(theme)
   const dark = theme === 'dark'
   const [search, setSearch] = useState('')
   const [notFound, setNotFound] = useState(false)
+  const onCount = LAYER_META.filter((m) => layers[m.key]).length
 
   const handleSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return
@@ -203,28 +219,25 @@ export default function Sidebar({
   return (
     <aside
       className={clsx(
-        'flex h-full w-full flex-col lg:w-[272px] lg:flex-none lg:border-r',
+        'flex h-full w-full flex-col lg:w-[288px] lg:flex-none lg:border-r',
         t.panel, t.border, t.text,
       )}
     >
-      <div className={clsx('border-b px-4 pb-3 pt-4', t.border)}>
-        <div className="mb-3 flex items-center gap-2.5">
-          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-signal text-sm font-bold text-ink-900">
-            FM
-          </div>
+      <div className={clsx('border-b px-5 pb-4 pt-5', t.border)}>
+        <div className="mb-4 flex items-center gap-2.5">
+          <Link href="/" aria-label="FloakMap home" className="flex-shrink-0 rounded-md">
+            <Logo tone={dark ? 'light' : 'dark'} size={30} showWordmark={false} />
+          </Link>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold leading-tight tracking-tight">FloakMap</div>
-            <div className={clsx('text-[11px] leading-tight', t.faint)}>
-              US Parking &amp; Services
-            </div>
+            <div className="font-display text-[19px] font-extrabold leading-tight tracking-[-0.02em]">FloakMap</div>
           </div>
           <button
             onClick={onThemeToggle}
-            aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
-            className={clsx('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg transition-colors',
-                            t.hover, t.muted)}
+            aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'} 
+            className={clsx('flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] border transition-colors',
+                            t.base, t.border, t.muted, t.hover)}
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               {dark ? (
                 <>
@@ -240,8 +253,8 @@ export default function Sidebar({
             <button
               onClick={onClose}
               aria-label="Close menu"
-              className={clsx('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg lg:hidden',
-                              t.hover, t.muted)}
+              className={clsx('flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] border lg:hidden',
+                              t.base, t.border, t.muted, t.hover)}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    strokeWidth="2" strokeLinecap="round">
@@ -251,9 +264,9 @@ export default function Sidebar({
           )}
         </div>
 
-        <div className={clsx('flex items-center gap-2 rounded-lg border px-3 py-2 transition-colors',
+        <div className={clsx('flex h-11 items-center gap-2.5 rounded-xl border px-3 transition-colors',
                              t.base, notFound ? 'border-signal' : t.border)}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                strokeWidth="2.2" strokeLinecap="round" className={t.faint}>
             <circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" />
           </svg>
@@ -264,35 +277,40 @@ export default function Sidebar({
             onKeyDown={handleSearch}
             placeholder="Search city or ZIP"
             autoComplete="off"
-            className={clsx('min-w-0 flex-1 bg-transparent text-[12.5px] outline-none',
+            className={clsx('min-w-0 flex-1 bg-transparent text-[14px] outline-none',
                             t.text, dark ? 'placeholder:text-ink-500' : 'placeholder:text-ink-300')}
           />
         </div>
         {notFound && (
-          <p className="mt-1.5 px-1 text-[11px] text-signal">
+          <p className="mt-2 px-1 text-[12px] text-signal">
             No match. Try Denver, Chicago, or a ZIP.
           </p>
         )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <p className={clsx('mb-1.5 text-[11px] font-medium', t.faint)}>Layers</p>
-        {LAYER_META.map(({ key, label }) => {
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <h2 className="font-display text-[17px] font-bold tracking-[-0.01em]">Layers</h2>
+          <span className={clsx('text-[12px] tabular-nums', t.faint)}>
+            {onCount} of {LAYER_META.length} on
+          </span>
+        </div>
+        {LAYER_META.map(({ key, label, blurb }) => {
           const on = layers[key]
           return (
             <button
               key={key}
               onClick={() => onLayerToggle(key)}
               aria-pressed={on}
-              className={clsx('-mx-1 flex w-full items-center gap-3 rounded-lg px-1 py-2 text-left transition-colors',
+              className={clsx('-mx-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-xl px-2 py-2.5 text-left transition-colors',
                               t.hover)}
             >
-              <LayerIcon category={key} theme={theme} active={on} />
-              <span className={clsx('min-w-0 flex-1 truncate text-[12.5px] font-medium transition-opacity',
-                                    !on && 'opacity-45')}>
-                {label}
+              <LayerIcon category={key} theme={theme} size={38} active={on} />
+              <span className={clsx('flex min-w-0 flex-1 flex-col transition-opacity', !on && 'opacity-45')}>
+                <span className="truncate text-[14px] font-semibold">{label}</span>
+                <span className={clsx('truncate text-[12px]', t.faint)}>{blurb}</span>
               </span>
-              <span className={clsx('rounded-full px-2 py-0.5 text-[10.5px] tabular-nums', t.chip,
+              <span className={clsx('rounded-full px-2 py-0.5 text-[11.5px] font-semibold tabular-nums', t.chip,
                                     !on && 'opacity-45')}>
                 {counts[key]}
               </span>
@@ -303,27 +321,56 @@ export default function Sidebar({
       </div>
 
       <div className={clsx('border-t', t.border)}>
-        <button
-          onClick={onOpenSettings}
-          className={clsx('flex w-full items-center gap-2.5 px-4 py-3 text-left transition-colors', t.hover)}
-        >
-          <span className={clsx(
-            'flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ring-1',
-            dark ? 'bg-ink-800 text-ink-100 ring-ink-700' : 'bg-ink-100 text-ink-700 ring-ink-200',
-          )}>
-            {initialsOf(profileName)}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12.5px] font-medium">{profileName}</span>
-            <span className={clsx('block truncate text-[10.5px]', t.faint)}>Profile &amp; settings</span>
-          </span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={t.faint}>
-            <path d="M9 18l6-6-6-6" />
-          </svg>
-        </button>
+        {/* Signed in: avatar + name opens Settings on the Profile section.
+            Signed out: no profile row at all — just Sign up / Log in — but
+            Settings (gear) stays reachable either way below, since
+            everything in it except the Profile section works without an
+            account. */}
+        {signedIn ? (
+          <button
+            onClick={onOpenSettings}
+            className={clsx('flex w-full items-center gap-3 px-5 py-3.5 text-left transition-colors', t.hover)}
+          >
+            <span className="flex h-[38px] w-[38px] flex-shrink-0 items-center justify-center rounded-full bg-signal text-[13px] font-bold text-ink-900">
+              {initialsOf(profileName)}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[14px] font-semibold">{profileName}</span>
+              <span className={clsx('block truncate text-[12px]', t.faint)}>Profile &amp; settings</span>
+            </span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={t.faint}>
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+        ) : (
+          <div className="flex items-center gap-2 px-5 py-3.5">
+            <Link href="/signup" className="flex h-10 flex-1 items-center justify-center rounded-lg bg-signal text-[12.5px] font-semibold text-ink-900">
+              Sign up
+            </Link>
+            <Link href="/login" className={clsx('flex h-10 flex-1 items-center justify-center rounded-lg border text-[12.5px] font-medium', t.border, t.hover)}>
+              Log in
+            </Link>
+            <button
+              onClick={onOpenSettings}
+              aria-label="Settings"
+              className={clsx('flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border transition-colors',
+                              t.base, t.border, t.muted, t.hover)}
+            >
+              {IconGear}
+            </button>
+          </div>
+        )}
 
-        <p className={clsx('px-4 pb-3 text-[10px] leading-relaxed', t.faint)}>
+        {signedIn && onSignOut && (
+          <div className="px-5 pb-3">
+            <button onClick={onSignOut} className={clsx('h-9 w-full rounded-lg border text-[12.5px] font-medium', t.border, t.muted, t.hover)}>
+              Log out
+            </button>
+          </div>
+        )}
+
+        <p className={clsx('px-5 pb-4 text-[11px] leading-relaxed', t.faint)}>
           Map data ©{' '}
           <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer"
              className="underline underline-offset-2 hover:text-signal">
@@ -363,6 +410,9 @@ const GEO_COPY: Record<GeoStatus, { label: string; tone: 'ok' | 'warn' | 'bad' }
 interface SettingsProps {
   theme: Theme
   profileName: string
+  /** Everything here works without an account except the Profile section,
+   *  which needs a signed-in person to have a name and an avatar to show. */
+  signedIn: boolean
   prefs: MapPrefs
   geoStatus: GeoStatus
   geoMessage: string | null
@@ -428,8 +478,71 @@ function SettingsToggle({ on, onChange, label }: {
   )
 }
 
+interface MobileSearchBarProps {
+  theme: Theme
+  profileName?: string
+  signedIn?: boolean
+  onFlyTo: (dest: FlyTarget) => void
+  onOpenProfile: () => void
+}
+
+/**
+ * The full-width top bar shown below `lg` in place of the hamburger button.
+ * Same city/ZIP lookup as the desktop rail's search, plus an avatar at the
+ * right edge that opens the same Settings/profile overlay the desktop
+ * footer row opens — there is no separate mobile profile screen to keep in
+ * sync with the desktop one.
+ */
+export function MobileSearchBar({ theme, profileName = 'Guest', signedIn, onFlyTo, onOpenProfile }: MobileSearchBarProps) {
+  const t = ui(theme)
+  const dark = theme === 'dark'
+  const [search, setSearch] = useState('')
+  const [notFound, setNotFound] = useState(false)
+
+  const handleSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return
+    const hit = CITIES[search.trim().toLowerCase()]
+    if (hit) { onFlyTo(hit); setSearch(''); setNotFound(false) }
+    else setNotFound(true)
+  }
+
+  return (
+    <div className="absolute inset-x-3 top-3 z-10 lg:hidden">
+      <div className={clsx('flex h-11 items-center gap-2 rounded-full border pl-3.5 pr-1.5 shadow-md transition-colors',
+                           t.panel, notFound ? 'border-signal' : t.border)}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             strokeWidth="2.2" strokeLinecap="round" className={clsx('flex-shrink-0', t.faint)}>
+          <circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" />
+        </svg>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setNotFound(false) }}
+          onKeyDown={handleSearch}
+          placeholder="Search city or ZIP"
+          autoComplete="off"
+          className={clsx('min-w-0 flex-1 bg-transparent text-[14px] outline-none',
+                          t.text, dark ? 'placeholder:text-ink-500' : 'placeholder:text-ink-300')}
+        />
+        <button
+          onClick={onOpenProfile}
+          aria-label={signedIn ? `${profileName} \u2014 profile and settings` : 'Sign in or open settings'}
+          className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-signal text-[12px] font-bold text-ink-900"
+        >
+          {signedIn ? initialsOf(profileName) : IconGear}
+        </button>
+      </div>
+      {notFound && (
+        <p className={clsx('mt-1.5 ml-1 rounded-full px-2.5 py-1 text-[12px] text-signal shadow-sm', t.panel)}>
+          No match. Try Denver, Chicago, or a ZIP.
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function SettingsPage({
-  theme, profileName, prefs, geoStatus, geoMessage, layers,
+  theme, profileName, signedIn, prefs, geoStatus, geoMessage, layers,
   onPrefsChange, onThemeChange, onLayerToggle, onRequestLocation,
   onProfileNameChange, onClose,
 }: SettingsProps) {
@@ -463,20 +576,30 @@ export function SettingsPage({
         )}
       >
         <header className={clsx('flex flex-shrink-0 items-center gap-3 border-b px-5 py-4', t.border)}>
-          <span className={clsx(
-            'flex h-10 w-10 items-center justify-center rounded-full text-[13px] font-semibold ring-1',
-            dark ? 'bg-ink-800 text-ink-100 ring-ink-700' : 'bg-ink-100 text-ink-700 ring-ink-200',
-          )}>
-            {initialsOf(profileName)}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[15px] font-semibold">{draftName || profileName}</span>
-            <span className={clsx('block text-[11.5px]', t.faint)}>Settings</span>
-          </span>
+          {signedIn ? (
+            <>
+              <span className={clsx(
+                'flex h-10 w-10 items-center justify-center rounded-full text-[13px] font-semibold ring-1',
+                dark ? 'bg-ink-800 text-ink-100 ring-ink-700' : 'bg-ink-100 text-ink-700 ring-ink-200',
+              )}>
+                {initialsOf(profileName)}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-display text-[17px] font-bold">{draftName || profileName}</span>
+                <span className={clsx('block text-[11.5px]', t.faint)}>Settings</span>
+              </span>
+            </>
+          ) : (
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-display text-[17px] font-bold">Settings</span>
+            </span>
+          )}
+          {/* Close button always sits top right — same spot in this centred
+              desktop card and in the full-screen mobile view below. */}
           <button
             onClick={onClose}
             aria-label="Close settings"
-            className={clsx('flex h-8 w-8 items-center justify-center rounded-lg', t.hover, t.muted)}
+            className={clsx('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg', t.hover, t.muted)}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  strokeWidth="2" strokeLinecap="round">
@@ -486,46 +609,48 @@ export function SettingsPage({
         </header>
 
         <div className={clsx('min-h-0 flex-1 overflow-y-auto py-5', t.base)}>
-          <SettingsSection theme={theme} title="Profile">
-            <div className={clsx('border-b px-5 py-4', t.border)}>
-              {/* Associated, not just adjacent: without htmlFor/id a screen
-                  reader announces this input as unlabelled, and tapping the
-                  label does not focus it. */}
-              <label htmlFor="profile-name"
-                     className={clsx('mb-1.5 block text-[11px] font-medium', t.faint)}>
-                Display name
-              </label>
-              <input
-                id="profile-name"
-                value={draftName}
-                onChange={(e) => setDraftName(e.target.value)}
-                onBlur={commitName}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                  if (e.key === 'Escape') setDraftName(profileName)
-                }}
-                placeholder="Your name"
-                className={clsx(
-                  'w-full rounded-lg border px-3 py-2 text-[13px] outline-none transition-colors',
-                  t.text, dark
-                    ? 'border-ink-700 bg-ink-850 placeholder:text-ink-500 focus:border-signal'
-                    : 'border-ink-100 bg-white placeholder:text-ink-300 focus:border-signal',
-                )}
-              />
-              <p className={clsx('mt-1.5 text-[11px] leading-snug', t.faint)}>
-                This is what a net host sees next to your join request, and what
-                other members see on the map.
-              </p>
-            </div>
-            <SettingsRow theme={theme} label="Avatar" hint="Generated from your initials.">
-              <span className={clsx(
-                'flex h-9 w-9 items-center justify-center rounded-full text-[12px] font-semibold ring-1',
-                dark ? 'bg-ink-800 text-ink-100 ring-ink-700' : 'bg-ink-100 text-ink-700 ring-ink-200',
-              )}>
-                {initialsOf(draftName || profileName)}
-              </span>
-            </SettingsRow>
-          </SettingsSection>
+          {signedIn && (
+            <SettingsSection theme={theme} title="Profile">
+              <div className={clsx('border-b px-5 py-4', t.border)}>
+                {/* Associated, not just adjacent: without htmlFor/id a screen
+                    reader announces this input as unlabelled, and tapping the
+                    label does not focus it. */}
+                <label htmlFor="profile-name"
+                       className={clsx('mb-1.5 block text-[11px] font-medium', t.faint)}>
+                  Display name
+                </label>
+                <input
+                  id="profile-name"
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  onBlur={commitName}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                    if (e.key === 'Escape') setDraftName(profileName)
+                  }}
+                  placeholder="Your name"
+                  className={clsx(
+                    'w-full rounded-lg border px-3 py-2 text-[13px] outline-none transition-colors',
+                    t.text, dark
+                      ? 'border-ink-700 bg-ink-850 placeholder:text-ink-500 focus:border-signal'
+                      : 'border-ink-100 bg-white placeholder:text-ink-300 focus:border-signal',
+                  )}
+                />
+                <p className={clsx('mt-1.5 text-[11px] leading-snug', t.faint)}>
+                  This is what a net host sees next to your join request, and what
+                  other members see on the map.
+                </p>
+              </div>
+              <SettingsRow theme={theme} label="Avatar" hint="Generated from your initials.">
+                <span className={clsx(
+                  'flex h-9 w-9 items-center justify-center rounded-full text-[12px] font-semibold ring-1',
+                  dark ? 'bg-ink-800 text-ink-100 ring-ink-700' : 'bg-ink-100 text-ink-700 ring-ink-200',
+                )}>
+                  {initialsOf(draftName || profileName)}
+                </span>
+              </SettingsRow>
+            </SettingsSection>
+          )}
 
           <SettingsSection theme={theme} title="Location">
             <SettingsRow
@@ -549,7 +674,7 @@ export function SettingsPage({
               <SettingsRow theme={theme} label="Permission" hint="Blocked permissions have to be cleared in the browser's site settings.">
                 <button
                   onClick={onRequestLocation}
-                  className="rounded-lg bg-signal px-3 py-1.5 text-[12px] font-semibold text-ink-900"
+                  className="h-10 rounded-[10px] bg-signal px-4 text-[13px] font-semibold text-ink-900 transition-colors hover:bg-signal-400"
                 >
                   Try again
                 </button>
@@ -661,7 +786,7 @@ export function Tabs<T extends string>({
         'flex items-center gap-1 p-1',
         variant === 'pill'
           ? clsx('rounded-full border shadow-sm', t.panel, t.border)
-          : clsx('rounded-xl', t.base),
+          : clsx('rounded-xl', dark ? 'bg-ink-900' : 'bg-ink-100'),
         className,
       )}
     >
@@ -674,16 +799,16 @@ export function Tabs<T extends string>({
             aria-selected={on}
             onClick={() => onChange(id)}
             className={clsx(
-              'relative flex flex-1 items-center justify-center gap-1.5 font-medium',
+              'relative flex flex-1 items-center justify-center gap-1.5 font-semibold',
               'transition-colors focus-visible:outline-none focus-visible:ring-2',
               'focus-visible:ring-signal focus-visible:ring-offset-1',
               dark ? 'focus-visible:ring-offset-ink-900' : 'focus-visible:ring-offset-white',
-              variant === 'pill' ? 'rounded-full' : 'rounded-lg',
-              size === 'sm' ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2 text-[13px]',
+              variant === 'pill' ? 'rounded-full' : 'rounded-[9px]',
+              size === 'sm' ? 'h-9 px-3 text-[13px]' : 'h-10 px-4 text-[14px]',
               on
-                ? 'bg-signal text-ink-900 shadow-sm'
+                ? clsx('shadow-sm', dark ? 'bg-ink-700 text-ink-50' : 'bg-white text-ink-900')
                 : clsx(t.muted, dark ? 'hover:bg-ink-800 hover:text-ink-100'
-                                     : 'hover:bg-ink-100 hover:text-ink-900'),
+                                     : 'hover:bg-white/60 hover:text-ink-900'),
             )}
           >
             {dot && !on && (
@@ -694,10 +819,10 @@ export function Tabs<T extends string>({
             {!!count && (
               <span
                 className={clsx(
-                  'rounded-full px-1.5 text-[10.5px] font-semibold tabular-nums',
-                  on
-                    ? 'bg-ink-900/15 text-ink-900'
-                    : dark ? 'bg-ink-700 text-ink-200' : 'bg-ink-100 text-ink-600',
+                  'rounded-full px-[7px] py-px text-[11px] font-bold tabular-nums',
+                  dot
+                    ? 'bg-signal text-ink-900'
+                    : dark ? 'bg-ink-800 text-ink-200' : 'bg-ink-100 text-ink-600',
                 )}
               >
                 {count}

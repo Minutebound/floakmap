@@ -4,14 +4,20 @@ pydantic>=2.7.0
 pydantic-settings>=2.4.0
 python-dotenv>=1.0.1
 httpx>=0.27.0
+email-validator>=2.2.0
 
 # live tracking
 PyJWT>=2.9.0
 redis>=5.0.8
 websockets>=12.0
 
-# Enable when you move off the in-memory registry to backend/db/schema.sql:
-# sqlalchemy>=2.0.35
-# asyncpg>=0.29.0
-# geoalchemy2>=0.15.2
-# alembic>=1.13.3
+# database — optional at runtime; the app falls back to in-memory when
+# FLOAK_DATABASE_URL is empty. Install these to enable the Postgres/Timescale
+# path.
+sqlalchemy>=2.0.35
+asyncpg>=0.29.0
+geoalchemy2>=0.15.2
+alembic>=1.13.3
+
+# passwords: argon2 preferred; PBKDF2 fallback is built into hashlib.
+passlib[argon2]>=1.7.4

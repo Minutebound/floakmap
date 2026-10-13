@@ -74,22 +74,22 @@ export default function JoinNet({
   const step = decided ? 3 : session ? 2 : 1
 
   const input = clsx(
-    'w-full rounded-lg border px-3 py-2.5 text-[14px] outline-none transition-colors',
+    'h-12 w-full rounded-xl border px-3.5 text-[15px] outline-none transition-colors',
     t.base, t.text,
     dark ? 'border-ink-700 placeholder:text-ink-500 focus:border-signal'
          : 'border-ink-100 placeholder:text-ink-300 focus:border-signal',
   )
   const primary =
-    'w-full rounded-lg bg-signal px-3 py-2.5 text-[14px] font-semibold text-ink-900 ' +
-    'transition-opacity hover:opacity-90 disabled:opacity-40'
+    'h-[52px] w-full rounded-xl bg-signal text-[16px] font-semibold text-ink-900 ' +
+    'transition-colors hover:bg-signal-400 disabled:opacity-40'
   const secondary = clsx(
-    'w-full rounded-lg border px-3 py-2.5 text-[13px] font-medium transition-colors',
+    'h-11 w-full rounded-xl border text-[14px] font-medium transition-colors',
     t.border, t.muted, t.hover,
   )
 
   return (
-    <div className="px-4 py-4">
-      <div className="mb-4 flex items-center gap-3">
+    <div className="px-5 py-5">
+      <div className="mb-5 flex items-center gap-3">
         <Step n={1} label="Code"    theme={theme} state={step > 1 ? 'done' : 'current'} />
         <span className={clsx('h-px flex-1', dark ? 'bg-ink-700' : 'bg-ink-100')} />
         <Step n={2} label="Verify"  theme={theme}
@@ -100,8 +100,8 @@ export default function JoinNet({
 
       {/* ── Step 3: the host decided, and it was not yes ────────────────── */}
       {decided && (
-        <div className={clsx('rounded-xl border p-4', t.border, t.base)}>
-          <p className="text-[14px] font-semibold">
+        <div className={clsx('rounded-2xl border p-4', t.border, t.base)}>
+          <p className="font-display text-[18px] font-bold">
             {status!.status === 'expired' ? 'That request timed out' : 'Not approved'}
           </p>
           <p className={clsx('mt-1.5 text-[12.5px] leading-relaxed', t.muted)}>
@@ -114,14 +114,14 @@ export default function JoinNet({
       {/* ── Step 2: waiting on the host ─────────────────────────────────── */}
       {!decided && session && (
         <>
-          <p className={clsx('text-[12.5px] leading-relaxed', t.muted)}>
+          <p className={clsx('text-[14px] leading-relaxed', t.muted)}>
             Read this back to whoever runs{' '}
             <span className={clsx('font-medium', t.text)}>{session.net_name}</span>. They approve
             the fingerprint, not the name — the name is just what you typed.
           </p>
 
           <div className={clsx(
-            'mt-3 rounded-xl border px-3 py-4 text-center font-mono text-[22px] tracking-[0.18em]',
+            'mt-3 rounded-2xl border px-3 py-4 text-center font-mono text-[22px] tracking-[0.18em]',
             t.border, t.base, dark ? 'text-signal-300' : 'text-signal-700',
           )}>
             {session.fingerprint}
@@ -129,7 +129,7 @@ export default function JoinNet({
 
           <div className="mt-3 flex items-center gap-2">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400 motion-reduce:animate-none" />
-            <span className={clsx('text-[11.5px] tabular-nums', t.muted)}>
+            <span className={clsx('text-[12.5px] tabular-nums', t.muted)}>
               Waiting · expires in {Math.floor(remaining / 60)}:
               {String(remaining % 60).padStart(2, '0')}
             </span>
@@ -141,7 +141,7 @@ export default function JoinNet({
           {canHost && (
             <button
               onClick={onGoToHost}
-              className={clsx('mt-4 flex w-full items-start gap-2.5 rounded-xl border px-3.5 py-3 text-left',
+              className={clsx('mt-4 flex w-full items-start gap-2.5 rounded-2xl border px-4 py-3.5 text-left',
                               'border-signal/40 bg-signal/10')}
             >
               <span className="mt-[1px] text-signal">
@@ -151,8 +151,8 @@ export default function JoinNet({
                 </svg>
               </span>
               <span>
-                <span className="block text-[12.5px] font-semibold">Approve it in Host</span>
-                <span className={clsx('mt-0.5 block text-[11px] leading-snug', t.faint)}>
+                <span className="block text-[14px] font-semibold">Approve it in Host</span>
+                <span className={clsx('mt-1 block text-[12.5px] leading-snug', t.faint)}>
                   Running this net yourself? The request is sitting in your queue.
                   This stays open while you switch.
                 </span>
@@ -167,39 +167,45 @@ export default function JoinNet({
       {/* ── Step 1: the code ────────────────────────────────────────────── */}
       {!decided && !session && (
         <>
-          <p className={clsx('text-[12.5px] leading-relaxed', t.muted)}>
+          <h3 className="font-display text-[22px] font-bold tracking-[-0.01em]">Join a net</h3>
+          <p className={clsx('mt-1.5 text-[14px] leading-relaxed', t.muted)}>
             Enter the code you were given. Nobody sees you, and you see nobody,
             until the host approves.
           </p>
 
-          <label className={clsx('mt-4 mb-1.5 block text-[11px] font-medium', t.faint)}>
+          <label htmlFor="join-code" className={clsx('mb-1.5 mt-5 block text-[13px] font-semibold', t.text)}>
             Join code
           </label>
           <input
+            id="join-code"
             autoFocus
             value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
             placeholder="ABCDE-12345"
-            className={clsx(input, 'text-center font-mono tracking-[0.16em]')}
+            className={clsx(input, 'h-[52px] text-center font-mono text-[20px] tracking-[0.16em]')}
           />
 
-          <label className={clsx('mt-3 mb-1.5 block text-[11px] font-medium', t.faint)}>
+          <label htmlFor="join-name" className={clsx('mb-1.5 mt-4 block text-[13px] font-semibold', t.text)}>
             Your name
           </label>
           <input
+            id="join-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && code && name.trim() && onSubmit(code, name.trim())}
             placeholder="How the host will see you"
             className={input}
           />
+          <p className={clsx('mt-1.5 text-[12px]', t.faint)}>
+            What the host sees next to your request.
+          </p>
 
-          {error && <p className="mt-2 text-[12px] text-signal">{error}</p>}
+          {error && <p role="alert" className="mt-3 text-[12.5px] text-signal">{error}</p>}
 
           <button
             onClick={() => onSubmit(code, name.trim())}
             disabled={busy || !code || !name.trim()}
-            className={clsx(primary, 'mt-4')}
+            className={clsx(primary, 'mt-5')}
           >
             {busy ? 'Sending…' : 'Ask to join'}
           </button>

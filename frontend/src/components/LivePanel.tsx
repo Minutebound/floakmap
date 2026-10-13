@@ -17,10 +17,10 @@ import { useMemo, useState } from 'react'
 import clsx from 'clsx'
 import type { CategoryKey, DistanceUnit, GeoData, GeoFeature, Theme } from '@/lib/types'
 import {
-  LAYER_BY_KEY, LAYER_META, describeFacility, distanceMeters, formatDistance, layerColor,
+  LAYER_BY_KEY, LAYER_META, describeFacility, distanceMeters, formatDistance,
 } from '@/lib/types'
 import { ui } from '@/lib/theme'
-import { LayerIcon, alpha } from './Sidebar'
+import { LayerIcon, initialsOf } from './Sidebar'
 import type { ConnectionState, LiveState } from '@/lib/live-types'
 
 export interface NearbyResult {
@@ -100,14 +100,14 @@ export default function NearbyPanel({
   return (
     <div className="pb-4">
       {/* Status strip */}
-      <div className={clsx('flex items-center gap-2 border-b px-4 py-2.5', t.border)}>
+      <div className={clsx('flex items-center gap-2 border-b px-5 py-3', t.border)}>
         <span className={clsx(
-          'h-1.5 w-1.5 flex-shrink-0 rounded-full',
+          'h-2 w-2 flex-shrink-0 rounded-full',
           connection === 'live' ? 'bg-emerald-400' : 'bg-ink-300',
         )} />
-        <span className="text-[11.5px] font-medium">{CONNECTION_COPY[connection]}</span>
-        <span className={clsx('ml-auto text-[11px] tabular-nums', t.faint)}>
-          {subjects.length} moving · {results.length} places
+        <span className="text-[13px] font-semibold">{CONNECTION_COPY[connection]}</span>
+        <span className={clsx('ml-auto text-[13px] tabular-nums', t.faint)}>
+          {subjects.length} on the move
         </span>
       </div>
 
@@ -115,7 +115,7 @@ export default function NearbyPanel({
         <button
           onClick={onRequestLocation}
           className={clsx(
-            'm-4 flex w-[calc(100%-2rem)] items-start gap-3 rounded-xl border px-3.5 py-3 text-left',
+            'm-5 flex w-[calc(100%-2.5rem)] items-start gap-3 rounded-2xl border px-4 py-3.5 text-left',
             'border-signal/40 bg-signal/10',
           )}
         >
@@ -125,8 +125,8 @@ export default function NearbyPanel({
             <path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11z" /><circle cx="12" cy="10" r="2.6" />
           </svg>
           <span>
-            <span className="block text-[12.5px] font-semibold">Turn on location</span>
-            <span className={clsx('mt-0.5 block text-[11px] leading-snug', t.faint)}>
+            <span className="block text-[14px] font-semibold">Turn on location</span>
+            <span className={clsx('mt-1 block text-[12.5px] leading-snug', t.faint)}>
               Distances and ordering need your position. Everything here is
               alphabetical until then.
             </span>
@@ -136,47 +136,61 @@ export default function NearbyPanel({
 
       {/* Moving subjects first — the only rows that change while you read */}
       {subjects.length > 0 && (
-        <section className="px-4 pt-3">
-          <h3 className={clsx('mb-1.5 text-[11px] font-medium', t.faint)}>On the move</h3>
-          {subjects.map((s) => (
-            <button
-              key={s.subject_id}
-              onClick={() => onFollow(following === s.subject_id ? null : s.subject_id)}
-              className={clsx(
-                '-mx-1 flex w-[calc(100%+0.5rem)] items-center gap-2.5 rounded-lg px-1 py-2 text-left',
-                following === s.subject_id ? (dark ? 'bg-ink-800' : 'bg-ink-50') : t.hover,
-              )}
-            >
-              <span className={clsx(
-                'h-2 w-2 flex-shrink-0 rounded-full',
-                s.stale ? 'bg-ink-300' : 'bg-emerald-400',
-              )} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px] font-medium">{s.label}</span>
-                <span className={clsx('block truncate text-[10.5px]', t.faint)}>
-                  {s.stale ? 'Signal lost' : s.speed_kmh
-                    ? `${Math.round(s.speed_kmh)} km/h`
-                    : 'Stopped'}
+        <section className="px-5 pt-4">
+          <h3 className={clsx('mb-1.5 text-[13px] font-semibold', t.faint)}>On the move</h3>
+          {subjects.map((s) => {
+            const followed = following === s.subject_id
+            // A subject that went quiet loses its colour here as well as on the
+            // map: the dot is about where something is now, and we do not know.
+            const dotColor = s.stale
+              ? (dark ? '#4c5a6a' : '#9aa6b4')
+              : (s.color ?? (s.kind === 'person' ? '#16a34a' : '#2563eb'))
+            return (
+              <button
+                key={s.subject_id}
+                onClick={() => onFollow(followed ? null : s.subject_id)}
+                aria-pressed={followed}
+                className={clsx(
+                  '-mx-2.5 flex w-[calc(100%+1.25rem)] items-center gap-3 rounded-xl px-2.5 py-2.5 text-left',
+                  followed ? 'bg-signal/10' : t.hover,
+                )}
+              >
+                <span
+                  aria-hidden
+                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                  style={{ backgroundColor: dotColor }}
+                >
+                  {s.kind === 'person' ? initialsOf(s.label) : ''}
                 </span>
-              </span>
-              {following === s.subject_id && (
-                <span className="rounded-full bg-signal px-2 py-0.5 text-[10px] font-semibold text-ink-900">
-                  Following
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-[14px] font-semibold">{s.label}</span>
+                  <span className={clsx('truncate text-[12.5px]',
+                                        s.stale ? 'font-semibold text-signal' : t.faint)}>
+                    {s.stale ? 'Signal lost' : s.speed_kmh
+                      ? `${Math.round(s.speed_kmh)} km/h`
+                      : 'Stopped'}
+                  </span>
                 </span>
-              )}
-            </button>
-          ))}
+                {followed && (
+                  <span className="flex-shrink-0 rounded-full bg-signal px-2.5 py-[3px] text-[11.5px] font-semibold text-ink-900">
+                    Following
+                  </span>
+                )}
+              </button>
+            )
+          })}
         </section>
       )}
 
       {/* Fixed places */}
-      <section className="px-4 pt-3">
-        <div className="mb-2 flex items-center gap-2">
-          <h3 className={clsx('flex-1 text-[11px] font-medium', t.faint)}>Around you</h3>
+      <section className="px-5 pt-4">
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <h3 className={clsx('text-[13px] font-semibold', t.faint)}>Around you</h3>
+          {hasFix && <span className={clsx('text-[12px]', t.faint)}>Nearest first</span>}
         </div>
 
-        <div className={clsx('mb-2 flex items-center gap-2 rounded-lg border px-3 py-2', t.base, t.border)}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        <div className={clsx('mb-2 flex h-11 items-center gap-2.5 rounded-xl border px-3', t.base, t.border)}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                strokeWidth="2.2" strokeLinecap="round" className={t.faint}>
             <circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" />
           </svg>
@@ -184,51 +198,40 @@ export default function NearbyPanel({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Filter by name or city"
-            className={clsx('min-w-0 flex-1 bg-transparent text-[12px] outline-none',
+            className={clsx('min-w-0 flex-1 bg-transparent text-[14px] outline-none',
                             t.text, dark ? 'placeholder:text-ink-500' : 'placeholder:text-ink-300')}
           />
         </div>
 
         {filtered.length === 0 ? (
-          <p className={clsx('px-1 py-8 text-center text-[12px] leading-relaxed', t.faint)}>
+          <p className={clsx('px-1 py-8 text-center text-[13px] leading-relaxed', t.faint)}>
             {results.length === 0
-              ? 'No layers are switched on. Turn one on in the rail to see what is around you.'
+              ? 'Every layer is off. Turn one on in the left rail to see what’s around you.'
               : 'Nothing matches that filter.'}
           </p>
         ) : (
-          <ul className="space-y-0.5">
+          <ul>
             {filtered.map(({ feature, category, distance }) => {
               const p = feature.properties
-              const color = layerColor(category, theme)
               return (
                 <li key={`${category}-${p.name}-${feature.geometry.coordinates.join(',')}`}>
                   <button
                     onClick={() => onSelect(feature)}
-                    className={clsx('-mx-1 flex w-[calc(100%+0.5rem)] items-start gap-2.5 rounded-lg px-1 py-2 text-left',
+                    className={clsx('-mx-2.5 flex w-[calc(100%+1.25rem)] items-center gap-3 rounded-xl px-2.5 py-2.5 text-left',
                                     t.hover)}
                   >
-                    <LayerIcon category={category} theme={theme} size={28} />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-baseline gap-2">
-                        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{p.name}</span>
-                        {distance !== null && (
-                          <span className={clsx('flex-shrink-0 text-[10.5px] tabular-nums', t.faint)}>
-                            {formatDistance(distance, unit)}
-                          </span>
-                        )}
-                      </span>
-                      <span className={clsx('mt-0.5 block truncate text-[11px]', t.muted)}>
+                    <LayerIcon category={category} theme={theme} size={36} />
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate text-[14px] font-semibold">{p.name}</span>
+                      <span className={clsx('truncate text-[12.5px]', t.faint)}>
                         {describeFacility(p) || LAYER_BY_KEY[category].label}
                       </span>
-                      <span className={clsx('mt-0.5 block truncate text-[10.5px]', t.faint)}>
-                        {p.address}, {p.city}
-                      </span>
                     </span>
-                    <span
-                      aria-hidden
-                      className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full"
-                      style={{ backgroundColor: alpha(color, 0.8) }}
-                    />
+                    {distance !== null && (
+                      <span className="flex-shrink-0 text-[13px] font-semibold tabular-nums">
+                        {formatDistance(distance, unit)}
+                      </span>
+                    )}
                   </button>
                 </li>
               )

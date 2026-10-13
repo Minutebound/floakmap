@@ -57,7 +57,7 @@ export interface LayerMeta {
    */
   color: Record<Theme, string>
   /**
-   * 24×24 stroke paths, drawn with `fill="none" stroke="currentColor"`.
+   * 24×24 stroke or fill paths, drawn per `glyphStyle`.
    *
    * A list rather than one string because the glyphs that actually read at
    * marker size are built from two or three separate strokes — a car under a
@@ -65,6 +65,20 @@ export interface LayerMeta {
    * fake joins that look like smudges at 14px.
    */
   iconPaths: string[]
+  /**
+   * How `iconPaths` should be painted.
+   *
+   * `'fill'` — a single solid shape, the way real signage draws them: the
+   * international "P" and a lightning bolt are silhouettes, not line
+   * drawings, and stroking their outline at 2px makes them read as a hollow
+   * loop rather than the mark everyone already recognises.
+   *
+   * `'stroke'` (default) — a 2-unit line drawing. Compound glyphs built from
+   * several strokes (a car under a spray, a pump beside its hose, a wrench)
+   * turn into an unreadable smudge if filled solid at marker size, so they
+   * stay outlined.
+   */
+  glyphStyle?: 'fill' | 'stroke'
 }
 
 export const LAYER_META: LayerMeta[] = [
@@ -73,7 +87,12 @@ export const LAYER_META: LayerMeta[] = [
     label: 'Parking',
     blurb: 'Garages, lots and street parking',
     color: { light: '#2563eb', dark: '#60a5fa' },
-    iconPaths: ['M9 19V5h4.2a4.4 4.4 0 0 1 0 8.8H9'],
+    // A solid "P" silhouette — the counter (the hole in the bowl) is cut with
+    // a second sub-path and `fill-rule="evenodd"` — rather than a stroked
+    // outline. This is the mark on every blue parking sign; drawing it as a
+    // hollow 2px loop at 14px reads as a smudge, not a letter.
+    glyphStyle: 'fill',
+    iconPaths: ['M5 3h8a6 6 0 1 1 0 12H9v6H5V3zM9 6v6h4a3 3 0 1 0 0-6H9z'],
   },
   {
     key: 'carwash',
@@ -93,6 +112,10 @@ export const LAYER_META: LayerMeta[] = [
     label: 'EV charging',
     blurb: 'Level 2 and DC fast charging',
     color: { light: '#15803d', dark: '#4ade80' },
+    // Same bolt silhouette as before, now painted solid instead of stroked
+    // outline — a filled lightning bolt is the universal EV-charging mark;
+    // a hollow one reads as a decoration first and a bolt second.
+    glyphStyle: 'fill',
     iconPaths: ['M13 2.5 5 13.2h5.6L9.8 21.5 18 10.8h-5.6L13 2.5z'],
   },
   {

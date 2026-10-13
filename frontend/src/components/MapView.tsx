@@ -10,83 +10,64 @@ import { anchorFor, buildBasemapStyle, rasterFallbackStyle } from '@/lib/basemap
 import type { BasemapOptions } from '@/lib/basemap'
 import { alpha } from './Sidebar'
 
-/**
- * The "you are here" marker: a chevron rather than a dot, because a dot tells
- * you where you are and a chevron also tells you which way you are pointing,
- * which is the question someone actually has while navigating. White outline
- * so it survives both the cream land of the light basemap and the near-black
- * of the dark one without needing a per-theme variant.
- */
 const USER_ARROW = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 48 48">
-  <path d="M24 4 39 40 24 32 9 40Z" fill="#ff5555" stroke="#ffffff" stroke-width="3"
+  <path d="M24 4 39 40 24 32 9 40Z" fill="#ff5a61" stroke="#ffffff" stroke-width="3"
         stroke-linejoin="round"/>
 </svg>`
 
-/**
- * Popup colours per theme.
- *
- * These were hardcoded light-mode values, which meant dark mode rendered
- * near-black text on the dark popup background from globals.css, and left the
- * tag badges as bright light-grey islands. Popups are DOM, not canvas, so the
- * basemap palette does not reach them — they need their own tokens.
- *
- * `badgeText` clears 4.5:1 against `badgeBg` in both themes.
- */
+const esc = (v: unknown): string =>
+  String(v ?? '').replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] as string
+  ))
+
 const POPUP: Record<Theme, {
   title: string; body: string; muted: string; badgeBg: string; badgeText: string
 }> = {
   light: {
-    title:     '#111827',
-    body:      '#6b7280',
-    muted:     '#9ca3af',
-    badgeBg:   '#f3f4f6',
-    badgeText: '#374151',
+    title: '#17191d',
+    body: '#68707c',
+    muted: '#68707c',
+    badgeBg: '#eef0f3',
+    badgeText: '#414852',
   },
   dark: {
-    title:     '#e6edf3',
-    body:      '#9aa7b4',
-    muted:     '#8390a0',
-    badgeBg:   '#232d39',
-    badgeText: '#cdd7e2',
+    title: '#f5f6f8',
+    body: '#9aa6b4',
+    muted: '#9aa6b4',
+    badgeBg: '#1a222c',
+    badgeText: '#c8cfd8',
   },
 }
 
 /**
- * A category marker, drawn to match the layer filter exactly.
+ * Zoom threshold for our own facility data.
  *
- * Same rounded tile, same single-stroke glyph, same tinted fill and hairline
- * border. The legend and the map are then literally the same object in two
- * places, which is the cheapest possible way to make one explain the other.
- *
- * The tints are composited against the panel surface rather than left
- * translucent. A 10% wash over whatever road or park happens to be underneath
- * would shift colour as you pan; flattening it first keeps every marker
- * identical to its row in the rail no matter what it is standing on.
+ * Below PIN_MINZOOM the map shows nothing of ours at all — no dot, no icon.
+ * PIN_MINZOOM ≈ 14.3, which is roughly "zoomed in to 5,000 ft eye altitude"
+ * (ground/eye distance halves about every one zoom level, calibrated off
+ * zoom 15 ≈ 3,000 ft). Below that, every parking spot, charger and wash in
+ * view would collapse into an illegible smear — it should tell you to zoom
+ * in, not paint a wall of dots. Change this single constant to move the
+ * reveal point.
  */
+const PIN_MINZOOM = 14.3
+
 function markerSvg(iconPaths: string[], color: string, dark: boolean): string {
-  // Same tile as the sidebar's LayerIcon, redrawn as a static SVG for the map.
-  // One function — Sidebar's `alpha()` — computes every colour both places
-  // use, so a palette change updates the rail and the map together.
-  //
-  //   fill    alpha(color, .16 dark / .10 light)   — the tinted square
-  //   border  alpha(color, .42 dark / .30 light)   — 1 unit, matching
-  //           Tailwind's default 1px `border` at the tile's 30px logical size
-  //   glyph   stroke=color, fill=none, 2 units      — identical treatment,
-  //           not white/ink, so the map and the rail read as one system
-  //
-  // rx=9 on a 30-unit tile reproduces `rounded-[9px]` at LayerIcon's default
-  // size=30 exactly. The icon is centred and scaled by 16.5/24 (0.6875),
-  // matching `width={size * 0.55}` on a 24×24 viewBox in LayerIcon.
-  const fill   = alpha(color, dark ? 0.16 : 0.10)
-  const border = alpha(color, dark ? 0.42 : 0.30)
-  const glyph  = iconPaths.map((d) => `<path d="${d}"/>`).join('')
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 30 30">
-  <rect x="0.5" y="0.5" width="29" height="29" rx="9" fill="${fill}" stroke="${border}" stroke-width="1"/>
-  <g transform="translate(15 15) scale(0.6875) translate(-12 -12)" fill="none" stroke="${color}"
-     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    ${glyph}
-  </g>
-</svg>`
+  const surface = dark ? '#17202a' : '#f7f9fb'
+  const border = dark ? alpha(color, 0.46) : alpha(color, 0.27)
+  const glyph = iconPaths.map((d) => `<path d="${d}"/>`).join('')
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 36 36">
+    <defs>
+      <filter id="s" x="-35%" y="-35%" width="170%" height="180%">
+        <feDropShadow dx="0" dy="1.2" stdDeviation="1.4" flood-color="#20242a" flood-opacity="0.18"/>
+      </filter>
+    </defs>
+    <rect x="3" y="3" width="30" height="30" rx="9" fill="${surface}" stroke="#ffffff" stroke-width="3" filter="url(#s)"/>
+    <rect x="4.5" y="4.5" width="27" height="27" rx="7.5" fill="${alpha(color, dark ? 0.17 : 0.09)}" stroke="${border}" stroke-width="1"/>
+    <g transform="translate(18 18) scale(0.66) translate(-12 -12)" fill="none" stroke="${color}"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${glyph}</g>
+  </svg>`
 }
 
 export interface MapViewProps {
@@ -94,23 +75,10 @@ export interface MapViewProps {
   layers: Record<CategoryKey, boolean>
   geoData: GeoData
   flyTo?: { center: [number, number]; zoom: number } | null
-  /** Hands the map instance up once it has loaded, so LiveLayer can draw on it. */
   onReady?: (map: maplibregl.Map) => void
-  /**
-   * Draw MapLibre's attribution control on the map itself.
-   *
-   * ODbL requires the credit to be visible wherever the map is, not merely
-   * present somewhere in the product. On desktop the left rail is always on
-   * screen and carries it, so the on-map chip is redundant and takes a corner
-   * the zoom controls want. On narrow screens the rail is a drawer that is
-   * usually closed, so the chip has to stay.
-   */
   showAttribution?: boolean
-  /** Current device position, or null while we have no fix. */
   userFix?: GeoFix | null
-  /** Terrain / labels / POI switches from Settings. */
   mapOptions?: BasemapOptions
-  /** Reports a short human place name for the current position. */
   onPlaceName?: (name: string | null) => void
 }
 
@@ -118,40 +86,28 @@ export default function MapView({
   theme, layers, geoData, flyTo, onReady, showAttribution = true, userFix = null,
   mapOptions, onPlaceName,
 }: MapViewProps) {
-  const containerRef  = useRef<HTMLDivElement>(null)
-  const mapRef        = useRef<maplibregl.Map | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const mapRef = useRef<maplibregl.Map | null>(null)
   const usingFallback = useRef(false)
-  const geoDataRef    = useRef(geoData)
-  geoDataRef.current  = geoData
-  const layersRef     = useRef(layers)
-  layersRef.current   = layers
-  // Click handlers are registered once on `load`, so they close over the
-  // first render's theme. Read it through a ref instead, or popups keep the
-  // colours the app started in.
-  const themeRef      = useRef(theme)
-  themeRef.current    = theme
-  const optionsRef    = useRef(mapOptions)
-  optionsRef.current  = mapOptions
-  const userFixRef    = useRef(userFix)
-  userFixRef.current  = userFix
-  // Effects that reach into the map instance need to re-run once it exists;
-  // a ref alone never triggers them. Flipped as soon as the instance is
-  // constructed, not on `load` — controls can be added straight away, and
-  // waiting for tiles would leave the attribution missing on a slow network.
+  const geoDataRef = useRef(geoData)
+  geoDataRef.current = geoData
+  const layersRef = useRef(layers)
+  layersRef.current = layers
+  const themeRef = useRef(theme)
+  themeRef.current = theme
+  const optionsRef = useRef(mapOptions)
+  optionsRef.current = mapOptions
+  const userFixRef = useRef(userFix)
+  userFixRef.current = userFix
+  const selectedRef = useRef<string | null>(null)
   const [mapCreated, setMapCreated] = useState(false)
 
-  // Attribution follows the breakpoint, so it is added and removed rather
-  // than set once at construction.
   const attribRef = useRef<maplibregl.AttributionControl | null>(null)
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
     if (showAttribution && !attribRef.current) {
       attribRef.current = new maplibregl.AttributionControl({ compact: true })
-      // Top-right, not the conventional bottom-right. This control only exists
-      // below `lg`, where the bottom of the map is covered by the Live/Network
-      // sheet and the nav bar — an attribution nobody can see does not satisfy
-      // ODbL. Top-right is empty at these widths; the status pill is top-left.
       map.addControl(attribRef.current, 'top-right')
     } else if (!showAttribution && attribRef.current) {
       map.removeControl(attribRef.current)
@@ -160,18 +116,22 @@ export default function MapView({
   }, [showAttribution, mapCreated])
 
   /**
-   * Registers marker artwork on demand.
+   * Distance scale bar, bottom-left.
    *
-   * `addImage` from an SVG data URI is asynchronous — the Image has to decode
-   * first. Adding the symbol layer in the same tick means it references an
-   * image that does not exist yet, and MapLibre renders nothing at all rather
-   * than waiting: you get bare halos and one warning in the console.
-   *
-   * `styleimagemissing` inverts that. The layer declares whatever name it
-   * likes, MapLibre asks for the bitmap when it first needs to paint it, and
-   * we answer. It also survives a style swap for free, because a new style
-   * re-asks for everything it is missing.
+   * Added once and left alone — MapLibre's ScaleControl updates its own
+   * label on every render frame, so it needs no re-registration on pan,
+   * zoom or style swap. Hidden on narrow screens via CSS: the bottom-left
+   * corner is where the mobile Live/Network sheet lives, and a scale bar
+   * fighting a drag handle for the same 44px is worse than no scale bar.
    */
+  const scaleRef = useRef<maplibregl.ScaleControl | null>(null)
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || scaleRef.current) return
+    scaleRef.current = new maplibregl.ScaleControl({ maxWidth: 120, unit: 'imperial' })
+    map.addControl(scaleRef.current, 'bottom-left')
+  }, [mapCreated])
+
   const registerImage = useCallback((map: maplibregl.Map, id: string) => {
     if (map.hasImage(id)) return
 
@@ -179,27 +139,20 @@ export default function MapView({
     if (id === 'user-arrow') {
       svg = USER_ARROW
     } else {
-      const m = /^marker-(\w+)-(light|dark)$/.exec(id)
-      if (m) {
-        const key = m[1] as CategoryKey
+      const match = /^marker-(\w+)-(light|dark)$/.exec(id)
+      if (match) {
+        const key = match[1] as CategoryKey
         const meta = LAYER_BY_KEY[key]
-        if (meta) svg = markerSvg(meta.iconPaths, layerColor(key, m[2] as Theme), m[2] === 'dark')
+        if (meta) svg = markerSvg(meta.iconPaths, layerColor(key, match[2] as Theme), match[2] === 'dark')
       }
     }
     if (!svg) return
 
-    const img = new Image(128, 128)
+    const img = new Image(144, 144)
     img.onload = () => { if (!map.hasImage(id)) map.addImage(id, img, { pixelRatio: 4 }) }
     img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
   }, [])
 
-  /**
-   * The device-position layers: an accuracy halo and the heading chevron.
-   *
-   * Kept separate from the facility layers and added last, so the marker sits
-   * above every dot on the map. Where you are is never the thing that should
-   * be occluded.
-   */
   const userFeatures = (fix: GeoFix | null): GeoJSON.FeatureCollection => ({
     type: 'FeatureCollection',
     features: fix
@@ -219,22 +172,18 @@ export default function MapView({
       })
     }
 
-
     if (!map.getLayer('user-accuracy')) {
       map.addLayer({
         id: 'user-accuracy',
         type: 'circle',
         source: 'user-location',
         paint: {
-          // Real metre-accurate radius needs a projection trick; at the zooms
-          // this app is used at, a zoom-scaled halo reads the same and costs
-          // nothing.
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 8, 14, 22, 18, 46],
-          'circle-color': '#ff5555',
+          'circle-color': '#ff5a61',
           'circle-opacity': 0.14,
-          'circle-stroke-color': '#ff5555',
+          'circle-stroke-color': '#ff5a61',
           'circle-stroke-width': 1,
-          'circle-stroke-opacity': 0.35,
+          'circle-stroke-opacity': 0.32,
         },
       })
     }
@@ -247,8 +196,6 @@ export default function MapView({
         layout: {
           'icon-image': 'user-arrow',
           'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 0.5, 16, 0.85],
-          // Rotate with the map, so the chevron keeps pointing at the real
-          // bearing when the map itself is rotated.
           'icon-rotation-alignment': 'map',
           'icon-rotate': ['coalesce', ['get', 'heading'], 0],
           'icon-allow-overlap': true,
@@ -257,33 +204,53 @@ export default function MapView({
       })
     }
 
-    // A style swap rebuilds this source empty. Without replaying the last fix
-    // here, the arrow vanishes the first time someone toggles the theme — or
-    // silently at startup, when the raster fallback restyles the map.
     const src = map.getSource('user-location') as maplibregl.GeoJSONSource | undefined
     src?.setData(userFeatures(userFixRef.current))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /**
-   * Turn the fix into somewhere a person recognises.
-   *
-   * Read out of the vector tiles that are already downloaded rather than sent
-   * to a geocoder: no key, no rate limit, no third party learning where every
-   * user is standing, and it keeps working on a flaky connection because the
-   * answer is in tiles the map has already painted.
-   *
-   * Queries `place-query`, an invisible layer the style always declares, so
-   * this still resolves when someone has turned labels off in Settings.
-   * Returns null on the raster fallback, which has no vector source at all.
+   * Restyle the basemap's surviving place labels (city and town only — see
+   * basemap.ts, which no longer draws road, water, POI, shield, neighbourhood,
+   * village, state or country labels at all). Every remaining label still
+   * comes from the live vector tiles; this only changes face, spacing and
+   * halo to match the product's own type system.
    */
+  const applyPlaceTypography = useCallback((map: maplibregl.Map) => {
+    const style = map.getStyle()
+    if (!style?.layers || !style.glyphs) return
+
+    for (const candidate of style.layers) {
+      if (candidate.type !== 'symbol') continue
+      const layer = candidate as maplibregl.SymbolLayerSpecification
+      if (layer.id !== 'label-city' && layer.id !== 'label-town') continue
+
+      const setLayout = (property: string, value: unknown) => {
+        if (JSON.stringify(map.getLayoutProperty(layer.id, property)) !== JSON.stringify(value)) {
+          map.setLayoutProperty(layer.id, property, value)
+        }
+      }
+      const setPaint = (property: string, value: unknown) => {
+        if (JSON.stringify(map.getPaintProperty(layer.id, property)) !== JSON.stringify(value)) {
+          map.setPaintProperty(layer.id, property, value)
+        }
+      }
+
+      setLayout('text-font', ['Noto Sans Bold'])
+      setLayout('text-letter-spacing', 0.015)
+      setPaint('text-color', themeRef.current === 'dark' ? '#e7e9ec' : '#34322f')
+      setPaint('text-halo-color', themeRef.current === 'dark' ? '#151b22' : '#f4f1e9')
+      setPaint('text-halo-width', 1.25)
+      setPaint('text-halo-blur', 0.25)
+    }
+  }, [])
+
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapCreated || !onPlaceName) return
     if (!userFix) { onPlaceName(null); return }
 
     let cancelled = false
-
     const resolve = () => {
       if (cancelled) return
       if (!map.getLayer('place-query')) { onPlaceName(null); return }
@@ -294,9 +261,6 @@ export default function MapView({
       } catch { return }
       if (!feats.length) return
 
-      // Nearest thing of each granularity, within a radius where naming it is
-      // still honest: a suburb two kilometres away is where you are, a city
-      // forty kilometres away is not.
       const nearest = (classes: string[], maxM: number) => {
         let best: { name: string; d: number } | null = null
         for (const f of feats) {
@@ -313,83 +277,91 @@ export default function MapView({
       }
 
       const local = nearest(['neighbourhood', 'suburb', 'quarter', 'hamlet'], 2500)
-      const town  = nearest(['village', 'town', 'city'], 30000)
+      const town = nearest(['village', 'town', 'city'], 30000)
       const label = [local, town].filter(Boolean).join(', ')
       onPlaceName(label || null)
     }
 
     resolve()
-    // Tiles stream in, so the first attempt often has nothing to work with.
     map.on('idle', resolve)
     return () => { cancelled = true; map.off('idle', resolve) }
   }, [userFix, mapCreated, onPlaceName])
 
-  /** Push each new fix into the source. */
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapCreated) return
     const src = map.getSource('user-location') as maplibregl.GeoJSONSource | undefined
-    if (!src) return
-    src.setData(userFeatures(userFix))
+    src?.setData(userFeatures(userFix))
   }, [userFix, mapCreated])
 
   /**
-   * Adds the facility sources and layers. Safe to call repeatedly: a style
-   * swap (theme change, or the fallback kicking in) wipes everything the
-   * style did not declare, so this runs again on every `styledata`.
+   * Facility sources and layers. Only the icon pin is drawn now — there is no
+   * dot tier. The pin stays hidden below PIN_MINZOOM regardless of the layer
+   * toggle in the rail — turning a layer on at a world-scale zoom should not
+   * paint anything, it should tell you to zoom in.
    */
   const installFacilityLayers = useCallback((map: maplibregl.Map) => {
-    // Slot the dots above the road network but below the place labels, so a
-    // dense cluster of facilities never buries the city name underneath it.
     const before = anchorFor(map, 'overRoads')
 
     LAYER_META.forEach(({ key }) => {
-      const color = layerColor(key, themeRef.current)
       if (map.getSource(key)) return
-      const vis: 'visible' | 'none' = layersRef.current[key] ? 'visible' : 'none'
+      const visibility: 'visible' | 'none' = layersRef.current[key] ? 'visible' : 'none'
 
       map.addSource(key, { type: 'geojson', data: geoDataRef.current[key] })
-
-      // Zoomed out, a glyph is smaller than the strokes it is made of, so the
-      // marker degrades to a plain dot below z11 and only becomes an icon once
-      // there is room to read one.
-      map.addLayer({
-        id: `${key}-dot`,
-        type: 'circle',
-        source: key,
-        maxzoom: 10,
-        paint: {
-          'circle-radius':       ['interpolate', ['linear'], ['zoom'], 6, 3.5, 11, 6],
-          'circle-color':   color,
-          'circle-opacity': 0.9,
-        },
-        layout: { visibility: vis },
-      }, before)
-
-      // The image is registered lazily by the styleimagemissing handler below,
-      // so the layer can reference it before it has finished decoding.
-      const image = `marker-${key}-${themeRef.current}`
 
       map.addLayer({
         id: `${key}-pin`,
         type: 'symbol',
         source: key,
-        minzoom: 10,
+        minzoom: PIN_MINZOOM,
+        paint: {
+          'icon-opacity': ['interpolate', ['linear'], ['zoom'], PIN_MINZOOM, 0, PIN_MINZOOM + 0.4, 1],
+        },
         layout: {
-          'icon-image': image,
-          'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 0.5, 14, 0.78, 17, 1],
-          // Every facility matters equally, so none of them get hidden by
-          // collision. Allowing overlap also keeps a dense block of parking
-          // legible as a cluster instead of thinning to one arbitrary pin.
+          'icon-image': `marker-${key}-${themeRef.current}`,
+          'icon-size': ['interpolate', ['linear'], ['zoom'], PIN_MINZOOM, 0.55, PIN_MINZOOM + 3, 0.82, 17, 1],
           'icon-allow-overlap': true,
           'icon-ignore-placement': true,
-          visibility: vis,
+          visibility,
         },
       }, before)
     })
+
+    if (!map.getSource('selected-facility')) {
+      map.addSource('selected-facility', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+    }
+    if (!map.getLayer('selected-facility-halo')) {
+      map.addLayer({
+        id: 'selected-facility-halo',
+        type: 'circle',
+        source: 'selected-facility',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 13, 17, 18],
+          'circle-color': 'rgba(255,255,255,0)',
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 6,
+          'circle-stroke-opacity': 0.96,
+        },
+      }, before)
+    }
+    if (!map.getLayer('selected-facility-ring')) {
+      map.addLayer({
+        id: 'selected-facility-ring',
+        type: 'circle',
+        source: 'selected-facility',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 13, 17, 18],
+          'circle-color': 'rgba(255,255,255,0)',
+          'circle-stroke-color': '#ff5a61',
+          'circle-stroke-width': 2.5,
+        },
+      }, before)
+    }
   }, [])
 
-  // ── Init map once on mount ─────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
 
@@ -401,79 +373,93 @@ export default function MapView({
       attributionControl: false,
     })
 
-    // If the vector tiles are unreachable, fall back to the CartoDB raster
-    // rather than leaving a blank canvas. Once is enough — retrying in a loop
-    // just hammers a service that is already having a bad day.
-    map.on('error', (e: any) => {
+    map.on('error', (event: unknown) => {
+      const e = event as { sourceId?: string; source?: { id?: string } }
       const failedSource = e?.sourceId === 'openmaptiles' || e?.source?.id === 'openmaptiles'
       if (!failedSource || usingFallback.current) return
       usingFallback.current = true
       console.warn('[floakmap] vector basemap unavailable, using raster fallback')
-      map.setStyle(rasterFallbackStyle(theme))
+      map.setStyle(rasterFallbackStyle(themeRef.current))
     })
 
-    map.on('styleimagemissing', (e) => registerImage(map, e.id))
-
-    // Re-add our own layers after any style swap.
+    map.on('styleimagemissing', (event) => registerImage(map, event.id))
     map.on('styledata', () => {
       installFacilityLayers(map)
       installUserLayers(map)
+      applyPlaceTypography(map)
     })
 
-    // Click handlers live on the map, not the style, so they are registered
-    // once here — re-registering per styledata would stack duplicate popups.
     map.on('load', () => {
       installFacilityLayers(map)
       installUserLayers(map)
+      applyPlaceTypography(map)
 
       LAYER_META.forEach(({ key }) => {
-        const onClick = (e: maplibregl.MapLayerMouseEvent) => {
-          if (!e.features?.length) return
-          const feat   = e.features[0]
-          const coords = (feat.geometry as GeoJSON.Point).coordinates as [number, number]
-          const p      = feat.properties as Record<string, string | number>
-
+        const onClick = (event: maplibregl.MapLayerMouseEvent) => {
+          if (!event.features?.length) return
+          const feature = event.features[0]
+          const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number]
+          const p = feature.properties as Record<string, string | number>
           const c = POPUP[themeRef.current]
+          const dark = themeRef.current === 'dark'
+          const color = layerColor(key, themeRef.current)
 
           const tagHtml = (
             [p.type, p.spaces && `${p.spaces} spaces`, p.free && `Free: ${p.free}`,
              p.network, p.ports && `${p.ports} ports`, p.level, p.hours, p.phone]
               .filter(Boolean) as string[]
-          )
-            .map(
-              (t) =>
-                `<span style="font-size:10.5px;background:${c.badgeBg};border-radius:4px;padding:2px 7px;color:${c.badgeText};white-space:nowrap">${t}</span>`,
-            )
-            .join('')
+          ).map((tag) =>
+            `<span class="floak-popup-badge" style="background:${c.badgeBg};color:${c.badgeText}">${esc(tag)}</span>`,
+          ).join('')
 
-          new maplibregl.Popup({
-            closeButton: true, maxWidth: '290px', offset: 14,
-            className: themeRef.current === 'dark' ? 'floak-popup floak-popup-dark' : 'floak-popup',
+          const glyph = LAYER_BY_KEY[key].iconPaths.map((d) => `<path d="${d}"/>`).join('')
+          const tileHtml =
+            `<span class="floak-popup-icon" style="color:${color};background:${alpha(color, dark ? 0.16 : 0.10)};border-color:${alpha(color, dark ? 0.42 : 0.30)}">` +
+            `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${glyph}</svg></span>`
+
+          const popup = new maplibregl.Popup({
+            closeButton: true,
+            maxWidth: '300px',
+            offset: 20,
+            className: dark ? 'floak-popup floak-popup-dark' : 'floak-popup',
           })
             .setLngLat(coords)
             .setHTML(
-              `<div style="font-family:system-ui,sans-serif;line-height:1.45">
-                <div class="fm-cat" style="--fm-cat:${layerColor(key, themeRef.current)}">${LAYER_LABELS[key]}</div>
-                <div style="font-size:14px;font-weight:600;color:${c.title};margin-bottom:2px">${p.name}</div>
-                <div style="font-size:11.5px;color:${c.body};margin-bottom:6px">${p.address}, ${p.city}, ${p.state}</div>
-                ${p.notes ? `<div style="font-size:11px;color:${c.muted};margin-bottom:6px">${p.notes}</div>` : ''}
-                <div style="display:flex;flex-wrap:wrap;gap:4px">${tagHtml}</div>
-              </div>`,
+              `<article class="floak-popup-card">
+                <header class="floak-popup-header">
+                  ${tileHtml}
+                  <div class="floak-popup-heading">
+                    <div class="floak-popup-kicker" style="color:${color}">${esc(LAYER_LABELS[key])}</div>
+                    <div class="floak-popup-title" style="color:${c.title}">${esc(String(p.name))}</div>
+                  </div>
+                </header>
+                <div class="floak-popup-address" style="color:${c.body}">${esc(`${p.address}, ${p.city}, ${p.state}`)}</div>
+                ${tagHtml ? `<div class="floak-popup-badges">${tagHtml}</div>` : ''}
+                ${p.notes ? `<div class="floak-popup-notes" style="color:${c.body};border-color:${dark ? '#293440' : '#e4e7ec'}">${esc(String(p.notes))}</div>` : ''}
+              </article>`,
             )
             .addTo(map)
+
+          const selectionKey = `${coords[0]},${coords[1]}`
+          selectedRef.current = selectionKey
+          const selected = map.getSource('selected-facility') as maplibregl.GeoJSONSource | undefined
+          selected?.setData({
+            type: 'FeatureCollection',
+            features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: coords }, properties: {} }],
+          })
+          popup.on('close', () => {
+            if (selectedRef.current !== selectionKey) return
+            selectedRef.current = null
+            selected?.setData({ type: 'FeatureCollection', features: [] })
+          })
         }
 
-        // Both the dot and the pin are clickable: they swap at z11 and a
-        // handler on only one of them makes the map stop responding at a
-        // seemingly arbitrary zoom.
-        ;[`${key}-dot`, `${key}-pin`].forEach((id) => {
-          map.on('click', id, onClick)
-          map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer' })
-          map.on('mouseleave', id, () => { map.getCanvas().style.cursor = '' })
-        })
+        const id = `${key}-pin`
+        map.on('click', id, onClick)
+        map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer' })
+        map.on('mouseleave', id, () => { map.getCanvas().style.cursor = '' })
       })
 
-      // Live tracking layers are added on top of these, once the map exists.
       onReady?.(map)
     })
 
@@ -485,50 +471,42 @@ export default function MapView({
       mapRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // run once
+  }, [])
 
-  // ── Sync theme ─────────────────────────────────────────────────────────────
-  // A vector style change means setStyle, which drops every source and layer
-  // we added. The styledata handler above puts the facility layers back, and
-  // LiveLayer re-installs its own the same way.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
     map.setStyle(
       usingFallback.current ? rasterFallbackStyle(theme) : buildBasemapStyle(theme, optionsRef.current),
     )
-    // Settings changes (terrain, labels, POIs) alter the style's layer list,
-    // so they need the same rebuild the theme does. Serialised rather than
-    // passed by reference: the object is rebuilt on every settings render and
-    // would otherwise re-style the map on every keystroke elsewhere.
   }, [theme, JSON.stringify(mapOptions ?? {})])
 
-  // ── Sync layer visibility ──────────────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
     const apply = () => {
       ;(Object.keys(layers) as CategoryKey[]).forEach((key) => {
-        const vis: 'visible' | 'none' = layers[key] ? 'visible' : 'none'
-        if (map.getLayer(`${key}-dot`)) {
-          map.setLayoutProperty(`${key}-dot`, 'visibility', vis)
-          if (map.getLayer(`${key}-pin`)) map.setLayoutProperty(`${key}-pin`, 'visibility', vis)
-        }
+        const visibility: 'visible' | 'none' = layers[key] ? 'visible' : 'none'
+        if (map.getLayer(`${key}-pin`)) map.setLayoutProperty(`${key}-pin`, 'visibility', visibility)
       })
     }
     map.loaded() ? apply() : map.once('load', apply)
   }, [layers])
 
-  // ── Fly to city ────────────────────────────────────────────────────────────
+  // Keep the existing dynamic facility sources current when API data changes.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapCreated) return
+    ;(Object.keys(geoData) as CategoryKey[]).forEach((key) => {
+      const source = map.getSource(key) as maplibregl.GeoJSONSource | undefined
+      source?.setData(geoData[key])
+    })
+  }, [geoData, mapCreated])
+
   useEffect(() => {
     if (!flyTo) return
     mapRef.current?.flyTo({ center: flyTo.center, zoom: flyTo.zoom, speed: 1.4, curve: 1.3 })
   }, [flyTo])
 
-  // Sized, not positioned. maplibre-gl.css sets `.maplibregl-map { position:
-  // relative }` on this element, and because that stylesheet loads after
-  // Tailwind's utilities it beats `.absolute` at equal specificity — leaving a
-  // relatively-positioned box whose `inset-0` does nothing and whose height
-  // collapses to zero. Filling the parent avoids the fight entirely.
-  return <div ref={containerRef} className="h-full w-full" />
+  return <div ref={containerRef} className="floak-map-canvas h-full w-full" />
 }

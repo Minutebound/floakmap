@@ -1,274 +1,462 @@
--- FloakMap live layer: PostgreSQL 16 + PostGIS 3.4 + TimescaleDB 2.
+-- ==========================================================================
+-- FloakMap — layered database schema
+-- ==========================================================================
 --
--- Two storage shapes, because positions and everything else have opposite
--- access patterns. Positions are append-only, enormous, and almost always
--- read as a time range for one subject. Everything else is small, mutable,
--- and read by key. Treating them the same is how tracking databases die.
+-- Design pattern: layered logical databases, implemented as isolated
+-- Postgres schemas so a single cluster can host dev and small production,
+-- while the SAME migrations promote cleanly to physically separate
+-- clusters when scale demands it.
+--
+--   identity.*        USER database   — auth, orgs, memberships, audit
+--   app.*             OPERATIONAL     — subjects, geofences, trips, nets
+--   events_raw.*      NETWORK WHOUSE  — one hypertable per network holds raw
+--                                       events (positions, geofence events,
+--                                       alerts). Segregation is enforced by
+--                                       (net_id, org_id) columns + RLS.
+--
+-- The dbt-style staging/intermediate/marts layers (stg/int/marts) were
+-- removed — nothing writes to them yet and the two read call sites
+-- (position trail replay) now query events_raw directly. Reintroduce them
+-- as a dbt project once there's an actual analytics/BI consumer.
+--
+-- Every row that belongs to a tenant carries org_id. Row-Level Security
+-- enforces isolation. The application connects as the `floak_app` role and
+-- sets `app.current_org` per request; PostgreSQL does the rest.
+--
+-- Extensions: PostGIS for geometry, pgcrypto for gen_random_uuid(),
+-- TimescaleDB for hypertables. `timescaledb` is optional — when missing,
+-- the CREATE HYPERTABLE calls degrade to normal Postgres tables.
+-- ==========================================================================
 
 CREATE EXTENSION IF NOT EXISTS postgis;
-CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE EXTENSION IF NOT EXISTS citext;
+-- Timescale is optional. Wrap so a stock Postgres image still loads the file.
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS timescaledb;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'timescaledb extension unavailable; hypertables will be plain tables';
+END $$;
 
--- ---------------------------------------------------------------- tenancy
+CREATE SCHEMA IF NOT EXISTS identity;
+CREATE SCHEMA IF NOT EXISTS app;
+CREATE SCHEMA IF NOT EXISTS events_raw;
 
-CREATE TABLE orgs (
-    id          TEXT PRIMARY KEY DEFAULT 'org_' || encode(gen_random_bytes(6), 'hex'),
-    name        TEXT NOT NULL,
-    plan        TEXT NOT NULL DEFAULT 'free',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+-- Roles: the app never runs as superuser. This is not cosmetic — RLS below
+-- is enforced with FORCE ROW LEVEL SECURITY, which the table owner bypasses
+-- unless we deliberately use a non-owner role.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'floak_app') THEN
+        CREATE ROLE floak_app LOGIN PASSWORD 'floak_app_change_me';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'floak_analytics') THEN
+        CREATE ROLE floak_analytics LOGIN PASSWORD 'floak_analytics_change_me';
+    END IF;
+END $$;
+
+-- ==========================================================================
+-- IDENTITY: users, organisations, memberships, sessions, audit
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS identity.orgs (
+    org_id          TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    plan            TEXT NOT NULL DEFAULT 'free',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at      TIMESTAMPTZ
 );
 
-CREATE TABLE users (
-    id            TEXT PRIMARY KEY DEFAULT 'usr_' || encode(gen_random_bytes(6), 'hex'),
-    org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    email         CITEXT NOT NULL,
-    display_name  TEXT NOT NULL,
-    role          TEXT NOT NULL CHECK (role IN
-                    ('owner','admin','dispatcher','driver','member')),
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (org_id, email)
+CREATE TABLE IF NOT EXISTS identity.users (
+    user_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email_lower     TEXT UNIQUE NOT NULL,       -- lowercased for case-insensitive uniqueness
+    display_name    TEXT NOT NULL,
+    -- Argon2id / bcrypt hash. Nullable so SSO-only users don't need a password.
+    password_hash   TEXT,
+    mfa_secret      TEXT,                       -- TOTP shared secret, encrypted at rest
+    status          TEXT NOT NULL DEFAULT 'active',  -- active | locked | pending
+    failed_logins   INT NOT NULL DEFAULT 0,
+    last_login_at   TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ------------------------------------------------------------- subjects
-
-CREATE TABLE subjects (
-    id           TEXT PRIMARY KEY DEFAULT 'sub_' || encode(gen_random_bytes(6), 'hex'),
-    org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    kind         TEXT NOT NULL CHECK (kind IN ('person','vehicle','asset')),
-    label        TEXT NOT NULL,
-    user_id      TEXT REFERENCES users(id) ON DELETE SET NULL,
-    color        TEXT,
-    share_mode   TEXT NOT NULL DEFAULT 'precise'
-                 CHECK (share_mode IN ('precise','approximate','paused','off')),
-    metadata     JSONB NOT NULL DEFAULT '{}',
-    archived_at  TIMESTAMPTZ
+CREATE TABLE IF NOT EXISTS identity.memberships (
+    org_id          TEXT NOT NULL REFERENCES identity.orgs(org_id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES identity.users(user_id) ON DELETE CASCADE,
+    role            TEXT NOT NULL,              -- owner|admin|dispatcher|driver|member
+    joined_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at      TIMESTAMPTZ,
+    PRIMARY KEY (org_id, user_id)
 );
-CREATE INDEX ON subjects (org_id) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_memberships_user ON identity.memberships(user_id);
 
-CREATE TABLE trackers (
-    id           TEXT PRIMARY KEY DEFAULT 'trk_' || encode(gen_random_bytes(6), 'hex'),
-    org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    subject_id   TEXT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    key_hash     TEXT NOT NULL UNIQUE,     -- never the key itself
-    kind         TEXT NOT NULL DEFAULT 'phone',  -- phone | obd | hardware
-    last_seen_at TIMESTAMPTZ,
-    revoked_at   TIMESTAMPTZ
+-- Refresh tokens. Access tokens stay stateless JWTs; refresh tokens are
+-- server-tracked so we can revoke them one at a time. Only the HMAC is stored.
+CREATE TABLE IF NOT EXISTS identity.refresh_tokens (
+    token_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES identity.users(user_id) ON DELETE CASCADE,
+    org_id          TEXT NOT NULL REFERENCES identity.orgs(org_id) ON DELETE CASCADE,
+    token_hash      TEXT NOT NULL UNIQUE,
+    issued_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    revoked_at      TIMESTAMPTZ,
+    replaced_by     UUID REFERENCES identity.refresh_tokens(token_id),
+    user_agent      TEXT,
+    ip_hash         TEXT
 );
-CREATE INDEX ON trackers (key_hash) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_refresh_user ON identity.refresh_tokens(user_id);
 
--- ------------------------------------------------------------- positions
-
-CREATE TABLE positions (
-    org_id       TEXT        NOT NULL,
-    subject_id   TEXT        NOT NULL,
-    recorded_at  TIMESTAMPTZ NOT NULL,
-    geom         GEOGRAPHY(POINT, 4326) NOT NULL,
-    speed_kmh    REAL,
-    heading_deg  REAL,
-    accuracy_m   REAL,
-    battery_pct  SMALLINT,
-    telemetry    JSONB NOT NULL DEFAULT '{}'
+-- Every sensitive action goes here. Read-only for the app role except INSERT.
+CREATE TABLE IF NOT EXISTS identity.audit_log (
+    audit_id        BIGSERIAL PRIMARY KEY,
+    at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    org_id          TEXT,
+    actor_user_id   UUID,
+    actor_kind      TEXT NOT NULL,              -- user | device | guest | system
+    action          TEXT NOT NULL,              -- login.success, net.rotate_code, ...
+    target_kind     TEXT,
+    target_id       TEXT,
+    ip_hash         TEXT,
+    detail          JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+CREATE INDEX IF NOT EXISTS idx_audit_org_time ON identity.audit_log(org_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action_time ON identity.audit_log(action, at DESC);
 
-SELECT create_hypertable('positions', 'recorded_at', chunk_time_interval => INTERVAL '1 day');
+-- ==========================================================================
+-- OPERATIONAL: subjects (people, vehicles, assets), geofences, trips, nets
+-- ==========================================================================
 
--- Trip replay is always "this subject, this window", so lead with subject_id.
-CREATE INDEX positions_subject_time ON positions (subject_id, recorded_at DESC);
--- "Everything inside this polygon right now" needs the spatial index.
-CREATE INDEX positions_geom ON positions USING GIST (geom);
-
-ALTER TABLE positions SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'subject_id',
-    timescaledb.compress_orderby   = 'recorded_at DESC'
+CREATE TABLE IF NOT EXISTS app.subjects (
+    subject_id      TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL REFERENCES identity.orgs(org_id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,              -- person | vehicle | asset
+    label           TEXT NOT NULL,
+    tracker_id      TEXT UNIQUE,
+    share_mode      TEXT NOT NULL DEFAULT 'precise',
+    color           TEXT,
+    avatar_url      TEXT,
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- CHECK enforces the enum at the database level so a bug in the app
+    -- cannot store 'preciss' and silently break every downstream filter.
+    CONSTRAINT ck_subject_kind CHECK (kind IN ('person','vehicle','asset')),
+    CONSTRAINT ck_subject_share CHECK (share_mode IN ('precise','approximate','paused','off')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at      TIMESTAMPTZ
 );
-SELECT add_compression_policy('positions', INTERVAL '7 days');
-SELECT add_retention_policy('positions', INTERVAL '400 days');
+CREATE INDEX IF NOT EXISTS idx_subjects_org ON app.subjects(org_id) WHERE deleted_at IS NULL;
 
--- Pre-aggregated daily mileage. Utilisation reports read this instead of
--- scanning raw fixes, which is the difference between a dashboard that loads
--- and one that times out at the end of the quarter.
-CREATE MATERIALIZED VIEW subject_daily
-WITH (timescaledb.continuous) AS
-SELECT
-    subject_id,
-    org_id,
-    time_bucket('1 day', recorded_at)                     AS day,
-    count(*)                                              AS fixes,
-    max(speed_kmh)                                        AS max_speed_kmh,
-    ST_Length(ST_MakeLine(geom::geometry ORDER BY recorded_at)::geography) / 1000
-                                                          AS distance_km
-FROM positions
-GROUP BY subject_id, org_id, day;
-
-SELECT add_continuous_aggregate_policy('subject_daily',
-    start_offset => INTERVAL '3 days',
-    end_offset   => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '30 minutes');
-
--- ------------------------------------------------------------- geofences
-
-CREATE TABLE geofences (
-    id            TEXT PRIMARY KEY DEFAULT 'gf_' || encode(gen_random_bytes(6), 'hex'),
-    org_id        TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    name          TEXT NOT NULL,
-    geom          GEOGRAPHY(POLYGON, 4326) NOT NULL,
-    trigger       TEXT NOT NULL DEFAULT 'both'
-                  CHECK (trigger IN ('enter','exit','both','dwell')),
-    dwell_minutes INT NOT NULL DEFAULT 10,
-    subject_ids   TEXT[] NOT NULL DEFAULT '{}',
-    color         TEXT NOT NULL DEFAULT '#7c5cff',
-    active        BOOLEAN NOT NULL DEFAULT TRUE
+-- Device API keys. Only the HMAC is stored; plaintext is shown once at mint.
+CREATE TABLE IF NOT EXISTS app.device_keys (
+    key_hash        TEXT PRIMARY KEY,
+    tracker_id      TEXT NOT NULL,
+    org_id          TEXT NOT NULL REFERENCES identity.orgs(org_id) ON DELETE CASCADE,
+    label           TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at    TIMESTAMPTZ,
+    revoked_at      TIMESTAMPTZ
 );
-CREATE INDEX geofences_geom ON geofences USING GIST (geom);
-CREATE INDEX ON geofences (org_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_device_keys_tracker ON app.device_keys(tracker_id);
 
-CREATE TABLE geofence_state (
-    subject_id   TEXT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    geofence_id  TEXT NOT NULL REFERENCES geofences(id) ON DELETE CASCADE,
-    inside       BOOLEAN NOT NULL,
-    since        TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (subject_id, geofence_id)
+CREATE TABLE IF NOT EXISTS app.geofences (
+    geofence_id     TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL REFERENCES identity.orgs(org_id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    trigger         TEXT NOT NULL DEFAULT 'both',
+    dwell_minutes   INT NOT NULL DEFAULT 10,
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
+    color           TEXT NOT NULL DEFAULT '#7c5cff',
+    subject_ids     TEXT[] NOT NULL DEFAULT '{}',
+    geom            GEOMETRY(Polygon, 4326) NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_geofence_trigger CHECK (trigger IN ('enter','exit','both','dwell'))
 );
+CREATE INDEX IF NOT EXISTS idx_geofences_geom ON app.geofences USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_geofences_org ON app.geofences(org_id) WHERE active;
 
--- ---------------------------------------------------------------- alerts
-
-CREATE TABLE alerts (
-    id              TEXT PRIMARY KEY DEFAULT 'alr_' || encode(gen_random_bytes(6), 'hex'),
-    org_id          TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    subject_id      TEXT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    kind            TEXT NOT NULL,
-    severity        TEXT NOT NULL CHECK (severity IN ('info','warning','critical')),
-    message         TEXT NOT NULL,
-    geom            GEOGRAPHY(POINT, 4326),
-    raised_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    acknowledged_by TEXT REFERENCES users(id),
-    acknowledged_at TIMESTAMPTZ
+CREATE TABLE IF NOT EXISTS app.trips (
+    trip_id         TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL REFERENCES identity.orgs(org_id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    created_by      TEXT NOT NULL,
+    invite_code     TEXT NOT NULL UNIQUE,
+    member_subject_ids TEXT[] NOT NULL DEFAULT '{}',
+    destination     GEOMETRY(Point, 4326),
+    starts_at       TIMESTAMPTZ,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    active          BOOLEAN NOT NULL DEFAULT TRUE
 );
-CREATE INDEX ON alerts (org_id, raised_at DESC);
-CREATE INDEX ON alerts (org_id) WHERE acknowledged_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_trips_org_active ON app.trips(org_id) WHERE active;
 
--- ----------------------------------------------------------------- trips
-
-CREATE TABLE trips (
-    id           TEXT PRIMARY KEY DEFAULT 'trip_' || encode(gen_random_bytes(6), 'hex'),
-    org_id       TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    name         TEXT NOT NULL,
-    created_by   TEXT NOT NULL REFERENCES users(id),
-    invite_code  TEXT NOT NULL UNIQUE,
-    destination  GEOGRAPHY(POINT, 4326),
-    starts_at    TIMESTAMPTZ,
-    expires_at   TIMESTAMPTZ NOT NULL,
-    active       BOOLEAN NOT NULL DEFAULT TRUE
+-- FloakNets: private, named networks with membership approval.
+CREATE TABLE IF NOT EXISTS app.floaknets (
+    net_id              TEXT PRIMARY KEY,
+    org_id              TEXT NOT NULL REFERENCES identity.orgs(org_id) ON DELETE CASCADE,
+    name                TEXT NOT NULL,
+    host_subject_id     TEXT NOT NULL,
+    code_hash           TEXT NOT NULL,
+    code_rotated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    require_approval    BOOLEAN NOT NULL DEFAULT TRUE,
+    max_members         INT NOT NULL DEFAULT 50,
+    default_role        TEXT NOT NULL DEFAULT 'member',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived_at         TIMESTAMPTZ
 );
-CREATE INDEX ON trips (org_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_nets_org ON app.floaknets(org_id) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_nets_code ON app.floaknets(code_hash);
 
-CREATE TABLE trip_members (
-    trip_id    TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
-    subject_id TEXT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (trip_id, subject_id)
-);
-
--- -------------------------------------------------------------- floaknets
-
-CREATE TABLE floaknets (
-    id               TEXT PRIMARY KEY DEFAULT 'net_' || encode(gen_random_bytes(5), 'hex'),
-    org_id           TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-    name             TEXT NOT NULL,
-    host_subject_id  TEXT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    -- HMAC only. There is no query that returns a working join code, which is
-    -- the point: a code you can look up is a code an attacker can look up.
-    code_hash        TEXT NOT NULL,
-    code_rotated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    require_approval BOOLEAN NOT NULL DEFAULT TRUE,
-    max_members      INT NOT NULL DEFAULT 50,
-    default_role     TEXT NOT NULL DEFAULT 'member'
-                     CHECK (default_role IN ('host','member','viewer')),
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    archived_at      TIMESTAMPTZ
-);
--- Partial unique: rotated-away hashes may repeat historically, live ones cannot.
-CREATE UNIQUE INDEX floaknets_code ON floaknets (code_hash) WHERE archived_at IS NULL;
-
-CREATE TABLE net_members (
-    net_id       TEXT NOT NULL REFERENCES floaknets(id) ON DELETE CASCADE,
-    subject_id   TEXT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    display_name TEXT NOT NULL,
-    role         TEXT NOT NULL CHECK (role IN ('host','member','viewer')),
-    joined_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    approved_by  TEXT,
-    revoked_at   TIMESTAMPTZ,
+CREATE TABLE IF NOT EXISTS app.net_members (
+    net_id          TEXT NOT NULL REFERENCES app.floaknets(net_id) ON DELETE CASCADE,
+    subject_id      TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT 'member',
+    joined_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at      TIMESTAMPTZ,
+    approved_by     TEXT,
     PRIMARY KEY (net_id, subject_id)
 );
-CREATE INDEX ON net_members (subject_id) WHERE revoked_at IS NULL;
 
-CREATE TABLE net_join_requests (
-    id           TEXT PRIMARY KEY DEFAULT 'req_' || encode(gen_random_bytes(5), 'hex'),
-    net_id       TEXT NOT NULL REFERENCES floaknets(id) ON DELETE CASCADE,
-    display_name TEXT NOT NULL,
-    fingerprint  TEXT NOT NULL,
-    claim_hash   TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'pending'
-                 CHECK (status IN ('pending','approved','denied','expired','withdrawn')),
-    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ NOT NULL,
-    subject_id   TEXT REFERENCES subjects(id) ON DELETE SET NULL,
-    decided_by   TEXT,
-    decided_at   TIMESTAMPTZ,
-    note         TEXT
+CREATE TABLE IF NOT EXISTS app.net_join_requests (
+    request_id      TEXT PRIMARY KEY,
+    net_id          TEXT NOT NULL REFERENCES app.floaknets(net_id) ON DELETE CASCADE,
+    display_name    TEXT NOT NULL,
+    fingerprint     TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    requested_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    claim_hash      TEXT NOT NULL,
+    subject_id      TEXT,
+    decided_by      TEXT,
+    decided_at      TIMESTAMPTZ,
+    note            TEXT,
+    CONSTRAINT ck_req_status CHECK (status IN ('pending','approved','denied','expired','withdrawn'))
 );
-CREATE INDEX ON net_join_requests (net_id, status, requested_at);
+CREATE INDEX IF NOT EXISTS idx_join_req_net_status ON app.net_join_requests(net_id, status);
 
--- Rate limiting. In Redis at runtime; this table is for the durable record of
--- who hammered which code, which is what you want when a net gets targeted.
-CREATE TABLE net_join_attempts (
-    id          BIGSERIAL PRIMARY KEY,
-    code_hash   TEXT,
-    client_key  TEXT NOT NULL,
-    succeeded   BOOLEAN NOT NULL,
-    at          TIMESTAMPTZ NOT NULL DEFAULT now()
+-- ==========================================================================
+-- NETWORK WAREHOUSE: raw events (positions, geofence events, alerts)
+-- ==========================================================================
+--
+-- One physical table per event kind, hypertabled by time. Networks are
+-- segregated logically by (net_id, org_id) columns and enforced by RLS,
+-- rather than by table-per-network — one table per network multiplies DDL
+-- churn and breaks cross-net analytics with no security benefit RLS does
+-- not already provide.
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS events_raw.positions (
+    org_id          TEXT NOT NULL,
+    net_id          TEXT,                       -- NULL for org-wide fleet
+    subject_id      TEXT NOT NULL,
+    tracker_id      TEXT NOT NULL,
+    recorded_at     TIMESTAMPTZ NOT NULL,
+    ingested_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lat             DOUBLE PRECISION NOT NULL,
+    lon             DOUBLE PRECISION NOT NULL,
+    geom            GEOGRAPHY(Point, 4326),     -- generated at insert time
+    accuracy_m      DOUBLE PRECISION,
+    speed_kmh       DOUBLE PRECISION,
+    heading_deg     DOUBLE PRECISION,
+    altitude_m      DOUBLE PRECISION,
+    battery_pct     INT,
+    telemetry       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    source          TEXT NOT NULL DEFAULT 'device'  -- device | sim | replay
 );
-CREATE INDEX ON net_join_attempts (client_key, at DESC);
+-- (org_id, subject_id, recorded_at) is the natural read pattern for replay;
+-- keep the index cheap by not making it unique — the ingest layer dedupes.
+CREATE INDEX IF NOT EXISTS idx_positions_subject_time
+    ON events_raw.positions(org_id, subject_id, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_positions_net_time
+    ON events_raw.positions(net_id, recorded_at DESC) WHERE net_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_positions_geom
+    ON events_raw.positions USING GIST (geom);
 
--- ------------------------------------------------------------ audit trail
+DO $$ BEGIN
+    PERFORM create_hypertable('events_raw.positions', 'recorded_at',
+                              chunk_time_interval => INTERVAL '1 day',
+                              if_not_exists => TRUE);
+EXCEPTION WHEN undefined_function THEN
+    RAISE NOTICE 'create_hypertable() unavailable; positions is a plain table';
+END $$;
 
--- Who looked at whose location, and when. Required for SOC 2, and the thing
--- an employee will ask for the first time they suspect they are being
--- watched outside working hours.
-CREATE TABLE location_access_log (
-    id         BIGSERIAL PRIMARY KEY,
-    org_id     TEXT NOT NULL,
-    actor_id   TEXT NOT NULL,
-    subject_id TEXT NOT NULL,
-    action     TEXT NOT NULL,   -- live_view | history_read | export | share_link
-    at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    context    JSONB NOT NULL DEFAULT '{}'
+CREATE TABLE IF NOT EXISTS events_raw.geofence_events (
+    event_id        UUID NOT NULL DEFAULT gen_random_uuid(),
+    org_id          TEXT NOT NULL,
+    net_id          TEXT,
+    subject_id      TEXT NOT NULL,
+    geofence_id     TEXT NOT NULL,
+    geofence_name   TEXT NOT NULL,
+    kind            TEXT NOT NULL,              -- enter | exit | dwell
+    occurred_at     TIMESTAMPTZ NOT NULL,
+    lat             DOUBLE PRECISION NOT NULL,
+    lon             DOUBLE PRECISION NOT NULL,
+    CONSTRAINT ck_geofence_event_kind CHECK (kind IN ('enter','exit','dwell'))
 );
-CREATE INDEX ON location_access_log (org_id, at DESC);
-CREATE INDEX ON location_access_log (subject_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_geofence_events_org_time
+    ON events_raw.geofence_events(org_id, occurred_at DESC);
 
--- --------------------------------------------------------- tenant isolation
+DO $$ BEGIN
+    PERFORM create_hypertable('events_raw.geofence_events', 'occurred_at',
+                              chunk_time_interval => INTERVAL '7 day',
+                              if_not_exists => TRUE);
+EXCEPTION WHEN undefined_function THEN
+    RAISE NOTICE 'create_hypertable() unavailable; geofence_events is a plain table';
+END $$;
 
--- Belt and braces alongside the application-level org_id checks. One bad
--- WHERE clause in a router should not leak another company's fleet.
-ALTER TABLE subjects  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE positions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE geofences ENABLE ROW LEVEL SECURITY;
-ALTER TABLE alerts    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE trips     ENABLE ROW LEVEL SECURITY;
-ALTER TABLE floaknets ENABLE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS events_raw.alerts (
+    alert_id        TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL,
+    net_id          TEXT,
+    subject_id      TEXT NOT NULL,
+    subject_label   TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    severity        TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    lat             DOUBLE PRECISION,
+    lon             DOUBLE PRECISION,
+    raised_at       TIMESTAMPTZ NOT NULL,
+    acknowledged_by TEXT,
+    acknowledged_at TIMESTAMPTZ,
+    CONSTRAINT ck_alert_severity CHECK (severity IN ('info','warning','critical'))
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_org_time
+    ON events_raw.alerts(org_id, raised_at DESC);
 
-CREATE POLICY org_isolation ON subjects
-    USING (org_id = current_setting('app.org_id', TRUE));
-CREATE POLICY org_isolation ON positions
-    USING (org_id = current_setting('app.org_id', TRUE));
-CREATE POLICY org_isolation ON geofences
-    USING (org_id = current_setting('app.org_id', TRUE));
-CREATE POLICY org_isolation ON alerts
-    USING (org_id = current_setting('app.org_id', TRUE));
-CREATE POLICY org_isolation ON trips
-    USING (org_id = current_setting('app.org_id', TRUE));
-CREATE POLICY org_isolation ON floaknets
-    USING (org_id = current_setting('app.org_id', TRUE));
+-- Retention: raw positions auto-drop after 90 days on Timescale. Roll up
+-- into a rollup table/materialized view before this fires, once there's an
+-- actual analytics consumer.
+DO $$ BEGIN
+    PERFORM add_retention_policy('events_raw.positions',
+                                 INTERVAL '90 days',
+                                 if_not_exists => TRUE);
+EXCEPTION WHEN undefined_function THEN
+    NULL;   -- vanilla Postgres has no add_retention_policy
+END $$;
+
+-- Compression policy for old chunks. Positions compress ~10x.
+DO $$ BEGIN
+    ALTER TABLE events_raw.positions SET (
+        timescaledb.compress,
+        timescaledb.compress_orderby = 'recorded_at DESC',
+        timescaledb.compress_segmentby = 'org_id, subject_id'
+    );
+    PERFORM add_compression_policy('events_raw.positions',
+                                   INTERVAL '7 days',
+                                   if_not_exists => TRUE);
+EXCEPTION WHEN undefined_function OR feature_not_supported OR undefined_column THEN
+    NULL;
+END $$;
+
+-- ==========================================================================
+-- ROW-LEVEL SECURITY
+-- ==========================================================================
+--
+-- Every request sets `SET LOCAL app.current_org = '<org_id>'`. Policies
+-- match rows against that setting. If the app forgets to set it, queries
+-- return zero rows rather than the wrong tenant's rows.
+-- ==========================================================================
+
+-- Small helper so policies are readable.
+CREATE OR REPLACE FUNCTION identity.current_org() RETURNS TEXT
+LANGUAGE sql STABLE AS $$
+    SELECT current_setting('app.current_org', true)
+$$;
+
+-- Convenience macro-ish DO block: enable RLS on every tenant table and
+-- attach a symmetric policy. Adding a new tenant table only needs one
+-- append to this list.
+DO $$
+DECLARE
+    tbl TEXT;
+BEGIN
+    FOREACH tbl IN ARRAY ARRAY[
+        'identity.memberships',
+        'identity.refresh_tokens',
+        'identity.audit_log',
+        'app.subjects',
+        'app.device_keys',
+        'app.geofences',
+        'app.trips',
+        'app.floaknets',
+        'app.net_members',
+        'app.net_join_requests',
+        'events_raw.positions',
+        'events_raw.geofence_events',
+        'events_raw.alerts'
+    ] LOOP
+        EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY', tbl);
+        EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY', tbl);
+        EXECUTE format(
+            'DROP POLICY IF EXISTS p_tenant ON %s;
+             CREATE POLICY p_tenant ON %s
+                USING (org_id = identity.current_org() OR identity.current_org() = ''__super__'')
+                WITH CHECK (org_id = identity.current_org() OR identity.current_org() = ''__super__'')',
+            tbl, tbl);
+    END LOOP;
+END $$;
+
+-- app.net_join_requests carries no org_id column of its own — the check
+-- runs through the parent net. Replace the generic policy with a scoped one.
+DROP POLICY IF EXISTS p_tenant ON app.net_join_requests;
+CREATE POLICY p_tenant ON app.net_join_requests
+    USING (
+        EXISTS (SELECT 1 FROM app.floaknets n
+                WHERE n.net_id = app.net_join_requests.net_id
+                  AND (n.org_id = identity.current_org()
+                       OR identity.current_org() = '__super__'))
+    );
+
+-- Grants: floak_app reads/writes identity, app, events_raw. There is no
+-- analytics-only role for now — floak_analytics can be reintroduced
+-- alongside the dbt layer described above once it's actually needed.
+--
+-- Safe to re-run by hand on a database that already exists (e.g. after
+-- pulling a newer schema.sql without wiping the Postgres volume) - just
+-- connect as the superuser and re-execute from here down. Postgres only
+-- runs docker-entrypoint-initdb.d scripts on a brand-new, empty data
+-- directory, so an existing pgdata volume will silently skip all of this
+-- file, including these grants, which is what "permission denied for schema
+-- identity" means: the role exists but was never actually granted anything
+-- on this particular database instance.
+GRANT USAGE ON SCHEMA identity, app, events_raw TO floak_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity, app, events_raw TO floak_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA identity, app, events_raw TO floak_app;
+
+GRANT USAGE ON SCHEMA events_raw TO floak_analytics;
+GRANT SELECT ON ALL TABLES IN SCHEMA events_raw TO floak_analytics;
+
+-- Default privileges: any table/sequence created AFTER this point (by a
+-- migration or a future ALTER TABLE ... ADD) automatically picks up the
+-- same grants, so a new table can never reintroduce this bug.
+ALTER DEFAULT PRIVILEGES IN SCHEMA identity, app, events_raw
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO floak_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA identity, app, events_raw
+    GRANT USAGE, SELECT ON SEQUENCES TO floak_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA events_raw
+    GRANT SELECT ON TABLES TO floak_analytics;
+
+-- ==========================================================================
+-- IDENTITY SEED DATA — demo accounts so login works out of the box against
+-- a fresh Postgres instance, matching the in-memory fallback seed in
+-- repositories/users.py. Password for both is "demo1234" (Argon2 hash below
+-- via passlib's default settings). Safe to re-run: ON CONFLICT DO NOTHING.
+-- ==========================================================================
+
+INSERT INTO identity.orgs (org_id, name, plan)
+VALUES ('org_demo', 'Floak Demo Org', 'demo')
+ON CONFLICT (org_id) DO NOTHING;
+
+INSERT INTO identity.users (user_id, email_lower, display_name, password_hash, status)
+VALUES
+    ('00000000-0000-0000-0000-000000000001', 'maya@floak.demo', 'Maya Ortiz',
+     '$argon2id$v=19$m=65536,t=3,p=4$4zzn/L/3HgPA+J9TKmXMWQ$JJDa/LcKxVQHMNZ/kHkuBCfxZY94atvy2z6J5pLUPEk', 'active'),
+    ('00000000-0000-0000-0000-000000000002', 'ops@floak.demo', 'Ops',
+     '$argon2id$v=19$m=65536,t=3,p=4$NYaQ0rr3fg9hLCWkFEKI8Q$8b4vFX2OyemC3bOnNo4KGBHGHHhNeyLCK53f0TmbOL0', 'active')
+ON CONFLICT (email_lower) DO NOTHING;
+
+INSERT INTO identity.memberships (org_id, user_id, role)
+VALUES
+    ('org_demo', '00000000-0000-0000-0000-000000000001', 'dispatcher'),
+    ('org_demo', '00000000-0000-0000-0000-000000000002', 'owner')
+ON CONFLICT (org_id, user_id) DO NOTHING;

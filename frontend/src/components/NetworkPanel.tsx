@@ -31,7 +31,7 @@ import type { Theme } from '@/lib/types'
 import type { FloakNet, NetMember, PendingRequest } from '@/lib/floaknet-types'
 import { netApi } from '@/lib/floaknet-api'
 import { ui } from '@/lib/theme'
-import { Tabs, IconHost, IconJoin, IconLive } from './Sidebar'
+import { Tabs, IconHost, IconJoin, IconLive, initialsOf } from './Sidebar'
 import JoinNet from './JoinNet'
 import type { JoinNetProps } from './JoinNet'
 import NearbyPanel from './LivePanel'
@@ -86,22 +86,22 @@ export default function NetworkPanel({
       className={clsx(
         // Full width inside a bottom sheet on small screens, a fixed column on
         // desktop. min-h-0 lets the scroll region below actually scroll.
-        'flex min-h-0 w-full flex-1 flex-col lg:h-full lg:w-[320px] lg:flex-none lg:border-l',
+        'flex min-h-0 w-full flex-1 flex-col lg:h-full lg:w-[360px] lg:flex-none lg:border-l',
         t.panel, t.border, t.text,
       )}
       aria-label="Activity and network"
     >
-      <header className={clsx('px-4 pb-3 pt-3 border-b lg:pt-3.5', t.border)}>
-        <div className="flex items-center gap-2 mb-2.5">
-          <h2 className="flex-1 text-[15px] font-semibold tracking-tight lg:text-sm">
+      <header className={clsx('border-b px-5 pb-3.5 pt-4', t.border)}>
+        <div className="mb-3.5 flex items-center gap-2">
+          <h2 className="flex-1 font-display text-[24px] font-extrabold tracking-[-0.02em]">
             {active.label === 'Live' ? 'Nearby' : 'Network'}
           </h2>
           <button
             onClick={onClose}
             aria-label="Close network panel"
-            className={clsx('w-7 h-7 rounded-md flex items-center justify-center transition-colors', t.hover, t.muted)}
+            className={clsx('flex h-9 w-9 items-center justify-center rounded-[10px] transition-colors', t.hover, t.muted)}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  strokeWidth="2" strokeLinecap="round">
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
@@ -118,7 +118,7 @@ export default function NetworkPanel({
           // would spread across 800px and stop reading as one control.
           className="max-w-md"
         />
-        <p className={clsx('mt-2 text-[11.5px] leading-snug', t.faint)}>{active.hint}</p>
+        <p className={clsx('mt-2.5 text-[12px] leading-snug', t.faint)}>{active.hint}</p>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
@@ -141,9 +141,9 @@ export default function NetworkPanel({
 function Empty({ theme, title, body }: { theme: Theme; title: string; body: string }) {
   const t = ui(theme)
   return (
-    <div className="px-4 py-10 text-center">
-      <p className="text-[13px] font-medium">{title}</p>
-      <p className={clsx('mt-1.5 text-[11.5px] leading-relaxed', t.faint)}>{body}</p>
+    <div className="px-5 py-10 text-center">
+      <p className="font-display text-[17px] font-bold">{title}</p>
+      <p className={clsx('mt-2 text-[13px] leading-relaxed', t.faint)}>{body}</p>
     </div>
   )
 }
@@ -264,30 +264,25 @@ function HostView({ theme, token, subjectId }: HostViewProps) {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const t = ui(theme)
   const input = clsx(
-    'w-full rounded-lg border px-3 py-1.5 text-[13px] outline-none transition-colors',
+    'h-12 w-full rounded-xl border px-3.5 text-[15px] outline-none transition-colors',
     dark
-      ? 'border-[#222c37] bg-[#151c24] text-ink-100 placeholder:text-ink-400 focus:border-signal'
-      : 'border-ink-100 bg-ink-50 text-ink-700 placeholder:text-ink-300 focus:border-signal',
+      ? 'border-ink-700 bg-ink-900 text-ink-100 placeholder:text-ink-500 focus:border-signal'
+      : 'border-ink-100 bg-ink-50 text-ink-900 placeholder:text-ink-300 focus:border-signal',
   )
-  const primary = clsx(
-    'rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors disabled:opacity-40',
-    dark ? 'bg-signal text-white hover:bg-signal-400' : 'bg-signal-600 text-white hover:bg-signal',
-  )
+  // One primary button style across the app: brand red with ink text, the
+  // same as Sign up on the landing page and Ask to join below.
+  const primary =
+    'h-11 rounded-[10px] bg-signal px-4 text-[14px] font-semibold text-ink-900 ' +
+    'transition-colors hover:bg-signal-400 disabled:opacity-40'
+  const card = clsx('rounded-2xl border p-4', t.border)
 
   return (
     <div className="flex w-full flex-col">
-      {queue.length > 0 && (
-        <div className={clsx('border-b px-4 py-2', dark ? 'border-ink-700' : 'border-ink-100')}>
-          <span className="rounded-full bg-signal px-1.5 py-[1px] text-[10px] font-semibold text-ink-900">
-            {queue.length} waiting
-          </span>
-        </div>
-      )}
-
-      <div>
+      <div className="flex flex-col gap-4 p-5">
         {/* ── Net picker / create ──────────────────────────────────────── */}
-        <div className={clsx('border-b px-4 py-3', dark ? 'border-ink-700' : 'border-ink-100')}>
+        <div className={clsx(card, 'flex flex-col gap-2.5')}>
           {nets.length > 0 && (
             <select
               value={active ?? ''}
@@ -309,38 +304,44 @@ function HostView({ theme, token, subjectId }: HostViewProps) {
               Create
             </button>
           </div>
-          {error && <p className="mt-2 text-[11px] text-signal">{error}</p>}
+          {error && <p role="alert" className="text-[12.5px] text-signal">{error}</p>}
         </div>
 
         {/* ── Join code ────────────────────────────────────────────────── */}
         {net && isHost && (
-          <div className={clsx('border-b px-4 py-3', dark ? 'border-ink-700' : 'border-ink-100')}>
-            <p className={clsx('text-[11px]', dark ? 'text-ink-300' : 'text-ink-400')}>
-              Share this code. It only lets someone ask to join — you still
-              approve every request.
-            </p>
-            {code ? (
-              <button
-                onClick={copyCode}
-                className={clsx(
-                  'mt-2 w-full rounded-lg border px-3 py-2 text-center font-mono text-[17px] tracking-[0.18em] transition-colors',
-                  dark ? 'border-[#222c37] bg-[#151c24] hover:border-signal'
-                       : 'border-ink-100 bg-ink-50 hover:border-signal',
-                )}
-              >
-                {copied ? 'Copied' : code}
-              </button>
-            ) : (
-              <p className={clsx('mt-2 text-[11px]', dark ? 'text-ink-400' : 'text-ink-300')}>
-                The code is stored hashed, so it can’t be shown again. Rotate to
-                get a new one.
-              </p>
-            )}
+          <div className={clsx(card, 'flex flex-col gap-3')}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-display text-[18px] font-bold">{net.name}</span>
+              <span className={clsx('flex-shrink-0 rounded-full px-2.5 py-1 text-[12px]', t.chip)}>
+                You’re hosting
+              </span>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <span className={clsx('text-[12.5px] font-semibold', t.faint)}>Join code</span>
+              {code ? (
+                // Dashed, because the code is a thing to take away rather than
+                // a field to fill in. Tapping copies it.
+                <button
+                  onClick={copyCode}
+                  className={clsx(
+                    'h-13 w-full rounded-xl border border-dashed py-3 text-center font-mono text-[22px] tracking-[0.2em] transition-colors',
+                    t.panel, dark ? 'border-ink-700 hover:border-signal' : 'border-ink-200 hover:border-signal',
+                  )}
+                >
+                  {copied ? 'Copied' : code}
+                </button>
+              ) : null}
+              <span className={clsx('text-[12px] leading-snug', t.faint)}>
+                {code
+                  ? 'Shown once and stored hashed. Copy it now or rotate for a new one.'
+                  : 'The code is stored hashed, so it can’t be shown again. Rotate to get a new one.'}
+              </span>
+            </div>
             <button
               onClick={rotate}
               disabled={busy}
-              className={clsx('mt-2 text-[11px] underline-offset-2 hover:underline',
-                dark ? 'text-ink-300' : 'text-ink-400')}
+              className={clsx('self-start text-[13px] font-semibold disabled:opacity-40',
+                              dark ? 'text-signal-400' : 'text-signal-700')}
             >
               Rotate code
             </button>
@@ -349,38 +350,36 @@ function HostView({ theme, token, subjectId }: HostViewProps) {
 
         {/* ── Pending requests ─────────────────────────────────────────── */}
         {isHost && queue.length > 0 && (
-          <div className={clsx('border-b', dark ? 'border-ink-700' : 'border-ink-100')}>
-            <p className={clsx('px-4 pt-3 text-[11px] leading-relaxed',
-              dark ? 'text-ink-300' : 'text-ink-400')}>
-              Ask them to read their fingerprint aloud and check it matches
-              before you approve. The name is whatever they typed.
-            </p>
+          <div className="flex flex-col gap-2.5">
+            <h3 className={clsx('text-[13px] font-semibold', t.faint)}>Waiting for approval</h3>
             {queue.map((r) => (
-              <div key={r.id} className="px-4 py-3">
+              <div key={r.id} className={clsx(card, 'flex flex-col gap-3')}>
+                <p className={clsx('text-[12.5px] leading-relaxed', t.faint)}>
+                  Ask them to read their fingerprint aloud and check it matches
+                  before you approve. The name is whatever they typed.
+                </p>
+                {/* The fingerprint is the biggest thing on the card: it is what
+                    the decision actually rests on. */}
                 <div className={clsx(
-                  'rounded-lg border px-3 py-2 text-center font-mono text-[15px] tracking-[0.16em]',
-                  dark ? 'border-[#222c37] bg-[#151c24] text-signal-300'
-                       : 'border-ink-100 bg-ink-50 text-signal-700',
+                  'rounded-xl border px-3 py-3 text-center font-mono text-[18px] tracking-[0.16em]',
+                  t.base, t.border, dark ? 'text-signal-300' : 'text-signal-700',
                 )}>
                   {r.fingerprint}
                 </div>
-                <p className="mt-2 text-[12.5px]">
-                  <span className={dark ? 'text-ink-300' : 'text-ink-400'}>says they are </span>
-                  <span className="font-medium">{r.display_name}</span>
+                <p className="text-[14px]">
+                  <span className={t.faint}>says they are </span>
+                  <span className="font-semibold">{r.display_name}</span>
                 </p>
-                <div className="mt-2 flex gap-2">
-                  <button onClick={() => decide(r.id, true)} className={clsx(primary, 'flex-1')}>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => decide(r.id, true)} className={primary}>
                     Approve
                   </button>
                   <button
                     onClick={() => decide(r.id, false)}
-                    className={clsx(
-                      'flex-1 rounded-lg border px-3 py-1.5 text-[13px] transition-colors',
-                      dark ? 'border-[#222c37] hover:bg-[#151c24]'
-                           : 'border-ink-100 hover:bg-ink-50',
-                    )}
+                    className={clsx('h-11 rounded-[10px] border text-[14px] font-medium transition-colors',
+                                    t.border, t.hover)}
                   >
-                    Deny
+                    Decline
                   </button>
                 </div>
               </div>
@@ -389,36 +388,43 @@ function HostView({ theme, token, subjectId }: HostViewProps) {
         )}
 
         {/* ── Members ──────────────────────────────────────────────────── */}
-        {net && (
-          <ul className="py-1">
-            {members.map((m) => (
-              <li key={m.subject_id} className="flex items-center gap-2 px-4 py-2">
-                <span className="truncate text-[13px]">{m.display_name}</span>
-                {m.role === 'host' && (
-                  <span className={clsx('rounded px-1.5 py-[1px] text-[10px]',
-                    dark ? 'bg-[#222c37] text-slate-300' : 'bg-ink-100 text-ink-400')}>
-                    host
+        {net && members.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <h3 className={clsx('pb-1 text-[13px] font-semibold', t.faint)}>Members</h3>
+            {members.map((m) => {
+              const host = m.role === 'host'
+              return (
+                <div key={m.subject_id} className="flex items-center gap-3 py-2">
+                  <span className={clsx(
+                    'flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[12px] font-bold',
+                    host ? 'bg-signal text-ink-900' : clsx(t.chip, t.text),
+                  )}>
+                    {initialsOf(m.display_name)}
                   </span>
-                )}
-                {isHost && m.role !== 'host' && (
-                  <button
-                    onClick={() => active && netApi.revoke(token, active, m.subject_id)
-                      .then(() => netApi.members(token, active).then(setMembers))
-                      .catch(() => setError('Could not remove them'))}
-                    className={clsx('ml-auto text-[11px] underline-offset-2 hover:underline',
-                      dark ? 'text-ink-400 hover:text-rose-400' : 'text-ink-300 hover:text-signal-700')}
-                  >
-                    Remove
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
+                  <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{m.display_name}</span>
+                  {host ? (
+                    <span className={clsx('flex-shrink-0 text-[12.5px]', t.faint)}>
+                      Host{m.subject_id === subjectId ? ' · you' : ''}
+                    </span>
+                  ) : isHost && (
+                    <button
+                      onClick={() => active && netApi.revoke(token, active, m.subject_id)
+                        .then(() => netApi.members(token, active).then(setMembers))
+                        .catch(() => setError('Could not remove them'))}
+                      className={clsx('flex-shrink-0 text-[12.5px] font-semibold',
+                                      dark ? 'text-signal-400' : 'text-signal-700')}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         )}
 
         {nets.length === 0 && (
-          <p className={clsx('px-4 py-10 text-center text-[12px] leading-relaxed',
-            dark ? 'text-ink-400' : 'text-ink-300')}>
+          <p className={clsx('px-1 py-8 text-center text-[13px] leading-relaxed', t.faint)}>
             A net is a private group that shares location. Name one above, then
             send people the code.
           </p>

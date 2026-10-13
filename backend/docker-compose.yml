@@ -1,12 +1,10 @@
 # ── FloakMap — backend only ──────────────────────────────────────────────────
-#   cd backend && docker compose up --build      →  http://localhost:8000/docs
+#   cd backend && docker compose up --build              → API only (in-memory DB)
+#   cd backend && docker compose --profile db up         → API + Postgres+PostGIS+Timescale + pgAdmin UI
+#   cd backend && docker compose --profile demo up       → API + fake vehicle sim
 #
-# Brings up the API and Redis. Redis carries the live position fan-out between
-# API pods; with one pod the app falls back to an in-process bus, but running
-# it here means dev matches production.
-#
-# Add fake vehicles:  docker compose --profile demo up --build
-
+# Redis carries the live position fan-out between API pods; with one pod the
+# app falls back to an in-process bus.
 services:
 
   redis:
@@ -29,11 +27,16 @@ services:
     container_name: floakmap-api
     ports:
       - "8000:8000"
+    # All FLOAK_* settings (jwt secret, database url, cors origins, tuning)
+    # come from backend/.env - core/config.py reads them directly via
+    # pydantic-settings. Nothing is duplicated or hardcoded here.
+    env_file:
+      - .env
     environment:
-      FLOAK_CORS_ORIGINS: ${FLOAK_CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:3002}
+      # The only override: inside the compose network Redis is reachable at
+      # the service name "redis", not localhost, so this replaces whatever
+      # FLOAK_REDIS_URL is set to for local (non-Docker) runs.
       FLOAK_REDIS_URL: redis://redis:6379/0
-      FLOAK_JWT_SECRET: ${FLOAK_JWT_SECRET:-dev-secret-change-me}
-      FLOAK_STALE_AFTER_SECONDS: ${FLOAK_STALE_AFTER_SECONDS:-180}
     depends_on:
       redis:
         condition: service_healthy
@@ -45,7 +48,6 @@ services:
       retries: 3
       start_period: 10s
 
-  # Nine fake vehicles and people, so the map has something moving on it.
   simulator:
     build:
       context: .
@@ -60,16 +62,17 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # PostGIS + TimescaleDB, for when you swap services/registry.py for real
-  # persistence. Not needed to run the app.
-  #   docker compose --profile db up
+  # PostGIS + TimescaleDB. Run with `--profile db` to persist events.
   db:
     image: timescale/timescaledb-ha:pg16
     container_name: floakmap-db
     profiles: ["db"]
+    env_file:
+      - .env.db
     environment:
-      POSTGRES_PASSWORD: floak
-      POSTGRES_DB: floakmap
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-floak}
+      POSTGRES_DB: ${POSTGRES_DB:-floakmap}
     ports:
       - "5432:5432"
     volumes:
@@ -82,5 +85,31 @@ services:
       timeout: 5s
       retries: 5
 
+  # Web UI for Postgres. http://localhost:5050
+  # Login with PGADMIN_DEFAULT_EMAIL / PGADMIN_DEFAULT_PASSWORD below.
+  # A server pointing at the db service is pre-registered via servers.json.
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: floakmap-pgadmin
+    profiles: ["db"]
+    env_file:
+      - .env.db
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@floak.demo}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-floakadmin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./db/pgadmin_servers.json:/pgadmin4/servers.json:ro
+      - ./db/pgadmin_pgpass:/pgadmin4/pgpass:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  pgadmin_data:

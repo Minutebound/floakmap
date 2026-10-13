@@ -17,6 +17,7 @@ from core.config import get_settings
 from models.live import (
     Alert, GeofenceEvent, IngestResult, LiveState, Position, ShareMode, Subject,
 )
+from repositories import events as events_repo
 from services import alerts as alert_rules
 from services import geofence as geo
 from services import registry
@@ -79,7 +80,11 @@ def _to_state(subject: Subject, pos: Position, stale: bool = False) -> LiveState
     )
 
 
-async def ingest_batch(positions: Iterable[Position], org_id: str) -> IngestResult:
+async def ingest_batch(
+    positions: Iterable[Position],
+    org_id: str,
+    net_id: Optional[str] = None,
+) -> IngestResult:
     s = get_settings()
     bus = get_bus()
     fences = await registry.list_geofences(org_id)
@@ -88,6 +93,8 @@ async def ingest_batch(positions: Iterable[Position], org_id: str) -> IngestResu
     states: list[LiveState] = []
     events: list[GeofenceEvent] = []
     raised: list[Alert] = []
+    # Collected for the warehouse write at the end of the batch.
+    warehoused: list[tuple[str, str, Position]] = []
 
     for pos in sorted(positions, key=lambda p: p.recorded_at):
         subject = await registry.subject_for_tracker(pos.tracker_id)
@@ -108,6 +115,7 @@ async def ingest_batch(positions: Iterable[Position], org_id: str) -> IngestResu
         # History keeps the true fix; only the live feed is blurred, because
         # the account owner is entitled to their own raw trail.
         await append_fix(org_id, subject.id, pos)
+        warehoused.append((subject.id, pos.tracker_id, pos))
 
         shared = _apply_privacy(subject, pos)
         accepted += 1
@@ -128,6 +136,15 @@ async def ingest_batch(positions: Iterable[Position], org_id: str) -> IngestResu
             "type": "positions",
             "data": [st.model_dump(mode="json") for st in states],
         })
+
+    # Warehouse writes are best-effort: a slow database must not stall the
+    # live feed. Failures are logged inside the repo and swallowed here.
+    if warehoused:
+        await events_repo.record_positions(org_id, warehoused, net_id=net_id)
+    if events:
+        await events_repo.record_geofence_events(org_id, events, net_id=net_id)
+    if raised:
+        await events_repo.record_alerts(org_id, raised, net_id=net_id)
     for ev in events:
         await bus.publish(org_id, {"type": "geofence_event", "data": ev.model_dump(mode="json")})
     for alert in raised:

@@ -17,6 +17,14 @@
  * To move to self-hosted tiles, change VECTOR_TILES to your own TileJSON or
  * `pmtiles://` URL. Nothing else in this file needs to change — Planetiler's
  * default profile emits the same OpenMapTiles schema these filters target.
+ *
+ * Label policy: the vector tiles carry the entire OpenStreetMap gazetteer —
+ * every road name, water name, POI, route shield and administrative label
+ * down to the neighbourhood. Drawing all of it turns the basemap into a
+ * second, competing dataset sitting under our own facility markers. This
+ * style only ever renders `label-city` and `label-town` — the minimum a
+ * person needs to know where the map is pointed — and leaves the rest of the
+ * gazetteer undrawn, permanently, not behind a toggle.
  */
 import type { StyleSpecification, Map as MapLibreMap } from 'maplibre-gl'
 import type { Theme } from './types'
@@ -179,18 +187,30 @@ export interface BasemapOptions {
   /** Hillshade under the map, fading out by z13. Costs one extra tile request
    *  per view below that zoom. Default true. */
   terrain?: boolean
-  /** US interstate / highway / state route shields. Default true. */
+  /**
+   * @deprecated Route shields (interstate / US route badges) are no longer
+   * drawn — they were default OSM "data", not ours, and cluttered the map at
+   * exactly the zooms our own facility markers need to read clearly. Kept
+   * only so existing callers that still pass this option do not break.
+   */
   shields?: boolean
-  /** OSM points of interest from z15. Off by default — the facility dots are
-   *  this product's POIs and the two compete for the same screen space. */
+  /**
+   * @deprecated OSM points of interest are no longer drawn at any zoom. The
+   * facility layers are this product's POIs; a second, uncontrolled set of
+   * default business names from OpenStreetMap is the exact clutter this flag
+   * used to (partially) guard against. Kept only for backward compatibility.
+   */
   poi?: boolean
-  /** Every text layer. Off gives a clean plate for screenshots and exports. */
+  /** City and town name labels — the minimum place context the map needs.
+   *  Every finer-grained label (roads, water, neighbourhoods, POIs, shields,
+   *  state/country names) is never drawn, regardless of this flag. Default
+   *  true. */
   labels?: boolean
 }
 
 const DEFAULTS: Required<BasemapOptions> = {
   terrain: true,
-  shields: true,
+  shields: false,
   poi: false,
   labels: true,
 }
@@ -413,7 +433,12 @@ export function buildBasemapStyle(
   layers.push(anchorLayer(ANCHORS.overRoads))
 
   // ── Labels ─────────────────────────────────────────────────────────────────
-  // Small and warm-grey. Your vehicles should out-shout the street names.
+  // Only city and town names. Every other default OSM label — road names,
+  // water names, POIs, route shields, neighbourhood/village/state/country
+  // names — is intentionally never drawn: our own facility markers are the
+  // only "data" this map exists to show, and a gazetteer of default names
+  // underneath them just makes the screen busier without adding anything a
+  // driver needs.
   if (o.labels) {
     // A dark halo under light text is what separates a label from a mid-tone
     // road fill. It needs to be wider on dark than on light, where the halo is
@@ -423,109 +448,6 @@ export function buildBasemapStyle(
       'text-halo-width': theme === 'dark' ? 1.9 : 1.5,
       'text-halo-blur': theme === 'dark' ? 0.6 : 0.4,
     }
-
-    layers.push({
-      id: 'label-water', type: 'symbol', source: src, 'source-layer': 'water_name', minzoom: 6,
-      filter: ['match', ['geometry-type'], ['Point', 'MultiPoint'], true, false],
-      layout: {
-        'text-field': NAME, 'text-font': BASEMAP_FONT_ITALIC,
-        'text-size': linear([6, 10, 12, 13]),
-        'text-letter-spacing': 0.06, 'text-max-width': 6,
-      },
-      paint: { 'text-color': c.waterLabel, ...halo },
-    })
-
-    layers.push({
-      id: 'label-road', type: 'symbol', source: src, 'source-layer': 'transportation_name',
-      minzoom: 13,
-      filter: classIs('motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'minor'),
-      layout: {
-        'symbol-placement': 'line',
-        'text-field': NAME, 'text-font': BASEMAP_FONT,
-        'text-size': linear([13, 10.5, 17, 12.5]),
-        'text-rotation-alignment': 'map', 'text-padding': 3,
-      },
-      paint: { 'text-color': c.labelRoad, ...halo },
-    })
-
-    if (o.shields) {
-      // Interstate and US route markers. The icons ship in the OpenFreeMap
-      // sprite; a road whose ref is wider than the widest shield is skipped
-      // rather than overflowing the badge.
-      const shield = (
-        id: string, networks: string[], minzoom: number, lineFrom: number,
-      ) =>
-        layers.push({
-          id, type: 'symbol', source: src, 'source-layer': 'transportation_name', minzoom,
-          filter: ['all',
-            ['<=', ['to-number', ['get', 'ref_length']], 6],
-            ['match', ['get', 'network'], networks, true, false]],
-          layout: {
-            'icon-image': ['concat', ['get', 'network'], '_', ['get', 'ref_length']],
-            'icon-rotation-alignment': 'viewport',
-            'symbol-placement': ['step', ['zoom'], 'point', lineFrom, 'line'],
-            'symbol-spacing': 260,
-            'text-field': ['to-string', ['get', 'ref']],
-            'text-font': BASEMAP_FONT,
-            'text-size': 9.5,
-            'text-rotation-alignment': 'viewport',
-          },
-          paint: { 'text-color': c.shieldText },
-        })
-
-      shield('shield-us-interstate', ['us-interstate'], 7, 8)
-      shield('shield-us-route', ['us-highway', 'us-state'], 9, 11)
-    }
-
-    if (o.poi) {
-      layers.push({
-        id: 'label-poi', type: 'symbol', source: src, 'source-layer': 'poi', minzoom: 15,
-        filter: ['all',
-          ['match', ['geometry-type'], ['Point', 'MultiPoint'], true, false],
-          ['has', 'name']],
-        layout: {
-          // Rank drives draw order; collision detection thins out the rest.
-          'symbol-sort-key': ['to-number', ['coalesce', ['get', 'rank'], 99]],
-          'icon-image': ['coalesce', ['image', ['get', 'class']], ['image', 'circle_11_black']],
-          'icon-size': 0.8,
-          'text-field': NAME, 'text-font': BASEMAP_FONT, 'text-size': 11,
-          'text-anchor': 'top', 'text-offset': [0, 0.7], 'text-max-width': 8,
-          'text-optional': true, 'text-padding': 4,
-        },
-        paint: { 'text-color': c.label, ...halo },
-      })
-    }
-
-    layers.push({
-      id: 'label-airport', type: 'symbol', source: src, 'source-layer': 'aerodrome_label',
-      minzoom: 11, filter: ['has', 'iata'],
-      layout: {
-        'text-field': NAME, 'text-font': BASEMAP_FONT, 'text-size': 11,
-        'text-anchor': 'top', 'text-offset': [0, 0.6], 'text-max-width': 9,
-      },
-      paint: { 'text-color': c.label, ...halo },
-    })
-
-    layers.push({
-      id: 'label-neighbourhood', type: 'symbol', source: src, 'source-layer': 'place', minzoom: 12,
-      filter: classIs('suburb', 'neighbourhood', 'quarter'),
-      layout: {
-        'text-field': NAME, 'text-font': BASEMAP_FONT,
-        'text-size': linear([12, 10.5, 16, 13]),
-        'text-letter-spacing': 0.12, 'text-transform': 'uppercase', 'text-max-width': 8,
-      },
-      paint: { 'text-color': c.label, 'text-opacity': c.labelDim, ...halo },
-    })
-
-    layers.push({
-      id: 'label-village', type: 'symbol', source: src, 'source-layer': 'place', minzoom: 10,
-      filter: classIs('village', 'hamlet'),
-      layout: {
-        'text-field': NAME, 'text-font': BASEMAP_FONT,
-        'text-size': linear([10, 10.5, 14, 13]),
-      },
-      paint: { 'text-color': c.label, ...halo },
-    })
 
     layers.push({
       id: 'label-town', type: 'symbol', source: src, 'source-layer': 'place', minzoom: 7,
@@ -551,28 +473,6 @@ export function buildBasemapStyle(
       },
       paint: { 'text-color': c.labelStrong, ...halo },
     })
-
-    layers.push({
-      id: 'label-state', type: 'symbol', source: src, 'source-layer': 'place',
-      minzoom: 4, maxzoom: 8, filter: ['==', ['get', 'class'], 'state'],
-      layout: {
-        'text-field': NAME, 'text-font': BASEMAP_FONT,
-        'text-size': linear([4, 10, 8, 13.5]),
-        'text-letter-spacing': 0.18, 'text-transform': 'uppercase', 'text-max-width': 7,
-      },
-      paint: { 'text-color': c.label, 'text-opacity': c.labelDim, ...halo },
-    })
-
-    layers.push({
-      id: 'label-country', type: 'symbol', source: src, 'source-layer': 'place', maxzoom: 9,
-      filter: ['==', ['get', 'class'], 'country'],
-      layout: {
-        'text-field': NAME, 'text-font': BASEMAP_FONT_BOLD,
-        'text-size': linear([2, 10, 6, 17]),
-        'text-letter-spacing': 0.06, 'text-max-width': 6,
-      },
-      paint: { 'text-color': c.labelStrong, ...halo },
-    })
   }
 
   return {
@@ -589,7 +489,10 @@ export function buildBasemapStyle(
  * The original CartoDB raster basemap, kept as a safety net. MapView switches
  * to this if the vector tiles do not load. It declares the same anchors, so
  * every `addLayer(…, anchorFor(map, 'overRoads'))` call keeps working and our
- * overlays do not silently reorder themselves during an outage.
+ * overlays do not silently reorder themselves during an outage. The raster
+ * tiles are pre-rendered images, so this fallback cannot selectively hide
+ * OSM's default labels the way the vector style does above — that trade-off
+ * only matters during an OpenFreeMap outage.
  */
 const CARTO: Record<Theme, string[]> = {
   light: ['a', 'b', 'c', 'd'].map(

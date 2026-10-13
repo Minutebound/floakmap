@@ -60,7 +60,15 @@ const config: Config = {
         auto:    '#ea580c',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        /**
+         * Plex Sans for everything you read, Bricolage Grotesque for the few
+         * things you should notice first (page and dialog titles, the
+         * wordmark), Plex Mono where characters must be told apart — join
+         * codes and fingerprints. Loaded in app/layout.tsx via next/font.
+         */
+        sans:    ['var(--font-sans)', 'system-ui', 'sans-serif'],
+        display: ['var(--font-display)', 'Georgia', 'serif'],
+        mono:    ['var(--font-mono)', 'ui-monospace', 'monospace'],
       },
     },
   },
